@@ -1,13 +1,147 @@
-use parser::parse;
+use compiler::compile;
+use interpreter::Interpreter;
+use parser::{parse, AST};
+use vm::{ByteCode, Value, VM};
 
 fn main() {
-    println!("{:?}", parse("(1 + 2 == \"foo\" * bar)").unwrap());
+    let mut ip = Interpreter::new();
+    println!("{:?}", ip.interpret("1").unwrap());
+}
+
+mod interpreter {
+    use super::{compile, parse, Value, VM};
+
+    pub struct Interpreter {
+        pub vm: VM,
+    }
+    impl Interpreter {
+        pub fn new() -> Self {
+            Interpreter { vm: VM::new() }
+        }
+        pub fn interpret(&mut self, code: &str) -> Result<Value, String> {
+            let ast = parse(code)?;
+            let bc = compile(ast);
+            self.vm.load(bc);
+            Ok(self.vm.exec())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_interpret_consts() {
+            let mut ip = Interpreter::new();
+            assert_eq!(ip.interpret("1"), Ok(Value::Int(1)));
+            assert_eq!(ip.interpret("1.5"), Ok(Value::Float(1.5)));
+            assert_eq!(ip.interpret("nil"), Ok(Value::Nil));
+            assert_eq!(ip.interpret("true"), Ok(Value::Bool(true)));
+            assert_eq!(ip.interpret("false"), Ok(Value::Bool(false)));
+            assert_eq!(ip.interpret("\"foo\""), Ok(Value::string("foo")));
+        }
+    }
+}
+
+mod vm {
+    use std::rc::Rc;
+
+    pub struct ByteCode {
+        pub constants: Vec<Value>,
+        pub bytecode: Vec<Op>,
+    }
+
+    impl ByteCode {
+        pub fn new() -> ByteCode {
+            ByteCode {
+                constants: Vec::new(),
+                bytecode: Vec::new(),
+            }
+        }
+        pub fn add_const(&mut self, val: Value) {
+            self.bytecode.push(Op::Const(self.constants.len()));
+            self.constants.push(val)
+        }
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum Value {
+        Nil,
+        Bool(bool),
+        Int(i64),
+        Float(f64),
+        String(Rc<str>),
+    }
+
+    impl Value {
+        pub fn string(s: &str) -> Value {
+            Value::String(Rc::from(s))
+        }
+    }
+
+    #[derive(Debug, PartialEq, Copy, Clone)]
+    pub enum Op {
+        Const(usize),
+    }
+
+    pub struct VM {
+        pub ip: usize,
+        pub sp: usize,
+        pub bytecode: ByteCode,
+        pub stack: Vec<Op>,
+    }
+
+    impl VM {
+        pub fn new() -> Self {
+            VM {
+                ip: 0,
+                sp: 0,
+                bytecode: ByteCode::new(),
+                stack: Vec::new(),
+            }
+        }
+
+        pub fn load(&mut self, bytecode: ByteCode) {
+            self.ip = 0;
+            self.sp = 0;
+            self.bytecode = bytecode;
+            self.stack = Vec::new();
+        }
+
+        pub fn exec(&mut self) -> Value {
+            let op = self.bytecode.bytecode[self.ip];
+            self.ip += 1;
+            match op {
+                Op::Const(i) => self.bytecode.constants[i].clone(),
+            }
+        }
+    }
+}
+
+mod compiler {
+    use super::{ByteCode, Value, AST};
+
+    pub fn compile(ast: AST) -> ByteCode {
+        let mut bc = ByteCode::new();
+        match ast {
+            AST::Int(x) => bc.add_const(Value::Int(x)),
+            AST::Float(x) => bc.add_const(Value::Float(x)),
+            AST::String(x) => bc.add_const(Value::string(&*x)),
+            AST::Symbol(x) => match &*x {
+                "nil" => bc.add_const(Value::Nil),
+                "true" => bc.add_const(Value::Bool(true)),
+                "false" => bc.add_const(Value::Bool(false)),
+                _ => {}
+            },
+            _ => {}
+        }
+        bc
+    }
 }
 
 mod parser {
     use nom::{
         branch::alt,
-        bytes::complete::tag,
         character::complete::{char, i64, multispace0, one_of, satisfy},
         combinator::not,
         multi::{many0, many1},
@@ -15,30 +149,14 @@ mod parser {
         sequence::{delimited, preceded, terminated},
         Finish, IResult,
     };
-    use std::rc::Rc;
 
     #[derive(Debug, PartialEq)]
     pub enum AST {
-        Nil,
-        Bool(bool),
         Int(i64),
         Float(f64),
-        String(Rc<String>),
-        Symbol(Rc<String>),
+        String(String),
+        Symbol(String),
         Expr(Vec<AST>),
-    }
-    fn parse_nil() -> impl Fn(&str) -> IResult<&str, AST> {
-        |i| {
-            let (r, _) = tag("nil")(i)?;
-            Ok((r, AST::Nil))
-        }
-    }
-
-    fn parse_bool() -> impl Fn(&str) -> IResult<&str, AST> {
-        |i| {
-            let (r, o) = alt((tag("true"), tag("false")))(i)?;
-            Ok((r, AST::Bool(o == "true")))
-        }
     }
 
     fn parse_int() -> impl Fn(&str) -> IResult<&str, AST> {
@@ -65,7 +183,7 @@ mod parser {
                 ))),
                 char('"'),
             )(i)?;
-            Ok((r, AST::String(Rc::new(o.into_iter().collect()))))
+            Ok((r, AST::String(o.into_iter().collect())))
         }
     }
 
@@ -75,7 +193,7 @@ mod parser {
                 many1(one_of("<>!@#$%^&*-+/=?|\\;:~")),
                 many1(satisfy(|x| x.is_ascii_alphabetic())),
             ))(i)?;
-            Ok((r, AST::Symbol(Rc::new(o.into_iter().collect()))))
+            Ok((r, AST::Symbol(o.into_iter().collect())))
         }
     }
 
@@ -95,8 +213,6 @@ mod parser {
             preceded(
                 multispace0,
                 alt((
-                    parse_nil(),
-                    parse_bool(),
                     parse_int(),
                     parse_float(),
                     parse_string(),
@@ -116,18 +232,7 @@ mod parser {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
-
-        #[test]
-        fn test_parse_nil() {
-            assert_eq!(parse("nil"), Ok(AST::Nil));
-        }
-
-        #[test]
-        fn test_parse_bool() {
-            assert_eq!(parse("true"), Ok(AST::Bool(true)));
-            assert_eq!(parse("false"), Ok(AST::Bool(false)));
-        }
+        use super::{parse, AST};
 
         #[test]
         fn test_parse_int() {
@@ -145,45 +250,35 @@ mod parser {
 
         #[test]
         fn test_parse_string() {
-            assert_eq!(parse("\"\""), Ok(AST::String(Rc::new(String::from("")))));
-            assert_eq!(
-                parse("\"\\\"\""),
-                Ok(AST::String(Rc::new(String::from("\""))))
-            );
+            assert_eq!(parse("\"\""), Ok(AST::String(String::from(""))));
+            assert_eq!(parse("\"\\\"\""), Ok(AST::String(String::from("\""))));
             // TO-DO: implement special characters in strings
             // assert_eq!(
             //     parse("\"\\n\""),
-            //     Ok(("", AST::String(Rc::new(String::from("\n")))))
+            //     Ok(("", AST::String(String::from("\n"))))
             // );
-            assert_eq!(
-                parse("\"nil\""),
-                Ok(AST::String(Rc::new(String::from("nil"))))
-            );
+            assert_eq!(parse("\"nil\""), Ok(AST::String(String::from("nil"))));
             assert_eq!(
                 parse("\"foo bar !\""),
-                Ok(AST::String(Rc::new(String::from("foo bar !"))))
+                Ok(AST::String(String::from("foo bar !")))
             );
         }
 
         #[test]
         fn test_parse_symbol() {
-            assert_eq!(parse("foo"), Ok(AST::Symbol(Rc::new(String::from("foo")))));
-            assert_eq!(parse("++"), Ok(AST::Symbol(Rc::new(String::from("++")))));
+            assert_eq!(parse("foo"), Ok(AST::Symbol(String::from("foo"))));
+            assert_eq!(parse("++"), Ok(AST::Symbol(String::from("++"))));
         }
 
         #[test]
         fn test_parse_expr() {
-            let expr1 = vec![
-                AST::Symbol(Rc::new(String::from("+"))),
-                AST::Int(1),
-                AST::Int(2),
-            ];
+            let expr1 = vec![AST::Symbol(String::from("+")), AST::Int(1), AST::Int(2)];
             assert_eq!(parse("(+ 1 2)"), Ok(AST::Expr(expr1)));
 
             let expr2 = vec![
-                AST::Symbol(Rc::new(String::from("fn"))),
-                AST::Expr(vec![AST::Symbol(Rc::new(String::from("x")))]),
-                AST::Symbol(Rc::new(String::from("x"))),
+                AST::Symbol(String::from("fn")),
+                AST::Expr(vec![AST::Symbol(String::from("x"))]),
+                AST::Symbol(String::from("x")),
             ];
             assert_eq!(parse("(fn (x) x)"), Ok(AST::Expr(expr2)));
         }
