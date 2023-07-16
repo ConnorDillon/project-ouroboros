@@ -1,7 +1,7 @@
-use compiler::compile;
+use compiler::Compiler;
 use interpreter::Interpreter;
 use parser::{parse, AST};
-use vm::{ByteCode, Value, VM};
+use vm::{ByteCode, Op, Value, VM};
 
 fn main() {
     let mut ip = Interpreter::new();
@@ -9,7 +9,7 @@ fn main() {
 }
 
 mod interpreter {
-    use super::{compile, parse, Value, VM};
+    use super::{parse, Compiler, Value, VM};
 
     pub struct Interpreter {
         pub vm: VM,
@@ -18,9 +18,10 @@ mod interpreter {
         pub fn new() -> Self {
             Interpreter { vm: VM::new() }
         }
+
         pub fn interpret(&mut self, code: &str) -> Result<Value, String> {
             let ast = parse(code)?;
-            let bc = compile(ast);
+            let bc = Compiler::new().compile(ast);
             self.vm.load(bc);
             Ok(self.vm.exec())
         }
@@ -40,12 +41,30 @@ mod interpreter {
             assert_eq!(ip.interpret("false"), Ok(Value::Bool(false)));
             assert_eq!(ip.interpret("\"foo\""), Ok(Value::string("foo")));
         }
+
+        #[test]
+        fn test_interpret_expr() {
+            let mut ip = Interpreter::new();
+            assert_eq!(ip.interpret("(+ 1 1)"), Ok(Value::Int(2)));
+            assert_eq!(ip.interpret("(+ 3 (- 2 1))"), Ok(Value::Int(4)));
+            assert_eq!(ip.interpret("(* 2 (/ 3 2.0))"), Ok(Value::Float(3.0)));
+        }
     }
 }
 
 mod vm {
     use std::rc::Rc;
 
+    #[derive(Debug, PartialEq, Copy, Clone)]
+    pub enum Op {
+        Const(usize),
+        Add,
+        Subtract,
+        Multiply,
+        Divide,
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
     pub struct ByteCode {
         pub constants: Vec<Value>,
         pub bytecode: Vec<Op>,
@@ -58,6 +77,11 @@ mod vm {
                 bytecode: Vec::new(),
             }
         }
+
+        pub fn add_op(&mut self, op: Op) {
+            self.bytecode.push(op);
+        }
+
         pub fn add_const(&mut self, val: Value) {
             self.bytecode.push(Op::Const(self.constants.len()));
             self.constants.push(val)
@@ -79,23 +103,16 @@ mod vm {
         }
     }
 
-    #[derive(Debug, PartialEq, Copy, Clone)]
-    pub enum Op {
-        Const(usize),
-    }
-
     pub struct VM {
         pub ip: usize,
-        pub sp: usize,
         pub bytecode: ByteCode,
-        pub stack: Vec<Op>,
+        pub stack: Vec<Value>,
     }
 
     impl VM {
         pub fn new() -> Self {
             VM {
                 ip: 0,
-                sp: 0,
                 bytecode: ByteCode::new(),
                 stack: Vec::new(),
             }
@@ -103,39 +120,124 @@ mod vm {
 
         pub fn load(&mut self, bytecode: ByteCode) {
             self.ip = 0;
-            self.sp = 0;
             self.bytecode = bytecode;
             self.stack = Vec::new();
         }
 
         pub fn exec(&mut self) -> Value {
-            let op = self.bytecode.bytecode[self.ip];
-            self.ip += 1;
-            match op {
-                Op::Const(i) => self.bytecode.constants[i].clone(),
+            while self.ip < self.bytecode.bytecode.len() {
+                let op = self.bytecode.bytecode[self.ip];
+                self.ip += 1;
+                match op {
+                    Op::Const(i) => self.const_op(i),
+                    Op::Add => self.add(),
+                    Op::Subtract => self.substract(),
+                    Op::Multiply => self.multiply(),
+                    Op::Divide => self.divide(),
+                }
             }
+            self.stack.pop().unwrap()
+        }
+
+        fn const_op(&mut self, idx: usize) {
+            self.stack.push(self.bytecode.constants[idx].clone())
+        }
+
+        fn add(&mut self) {
+            let x = self.stack.pop().unwrap();
+            let y = self.stack.pop().unwrap();
+            let z = match (x, y) {
+                (Value::Int(x), Value::Int(y)) => Value::Int(x + y),
+                (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
+                (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 + y),
+                (Value::Float(x), Value::Int(y)) => Value::Float(x + y as f64),
+                (x, y) => panic!("Type Error: (+ {:?} {:?})", x, y),
+            };
+            self.stack.push(z);
+        }
+
+        fn substract(&mut self) {
+            let x = self.stack.pop().unwrap();
+            let y = self.stack.pop().unwrap();
+            let z = match (x, y) {
+                (Value::Int(x), Value::Int(y)) => Value::Int(x - y),
+                (Value::Float(x), Value::Float(y)) => Value::Float(x - y),
+                (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 - y),
+                (Value::Float(x), Value::Int(y)) => Value::Float(x - y as f64),
+                (x, y) => panic!("Type Error: (- {:?} {:?})", x, y),
+            };
+            self.stack.push(z);
+        }
+
+        fn multiply(&mut self) {
+            let x = self.stack.pop().unwrap();
+            let y = self.stack.pop().unwrap();
+            let z = match (x, y) {
+                (Value::Int(x), Value::Int(y)) => Value::Int(x * y),
+                (Value::Float(x), Value::Float(y)) => Value::Float(x * y),
+                (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 * y),
+                (Value::Float(x), Value::Int(y)) => Value::Float(x * y as f64),
+                (x, y) => panic!("Type Error: (* {:?} {:?})", x, y),
+            };
+            self.stack.push(z);
+        }
+
+        fn divide(&mut self) {
+            let x = self.stack.pop().unwrap();
+            let y = self.stack.pop().unwrap();
+            let z = match (x, y) {
+                (Value::Int(x), Value::Int(y)) => Value::Int(x / y),
+                (Value::Float(x), Value::Float(y)) => Value::Float(x / y),
+                (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 / y),
+                (Value::Float(x), Value::Int(y)) => Value::Float(x / y as f64),
+                (x, y) => panic!("Type Error: (/ {:?} {:?})", x, y),
+            };
+            self.stack.push(z);
         }
     }
 }
 
 mod compiler {
-    use super::{ByteCode, Value, AST};
+    use super::{ByteCode, Op, Value, AST};
 
-    pub fn compile(ast: AST) -> ByteCode {
-        let mut bc = ByteCode::new();
-        match ast {
-            AST::Int(x) => bc.add_const(Value::Int(x)),
-            AST::Float(x) => bc.add_const(Value::Float(x)),
-            AST::String(x) => bc.add_const(Value::string(&*x)),
-            AST::Symbol(x) => match &*x {
-                "nil" => bc.add_const(Value::Nil),
-                "true" => bc.add_const(Value::Bool(true)),
-                "false" => bc.add_const(Value::Bool(false)),
-                _ => {}
-            },
-            _ => {}
+    pub struct Compiler {
+        bc: ByteCode,
+    }
+
+    impl Compiler {
+        pub fn new() -> Self {
+            Compiler {
+                bc: ByteCode::new(),
+            }
         }
-        bc
+
+        fn compile_part(&mut self, ast: AST) {
+            match ast {
+                AST::Int(x) => self.bc.add_const(Value::Int(x)),
+                AST::Float(x) => self.bc.add_const(Value::Float(x)),
+                AST::String(x) => self.bc.add_const(Value::string(&*x)),
+                AST::Symbol(x) => match &*x {
+                    "nil" => self.bc.add_const(Value::Nil),
+                    "true" => self.bc.add_const(Value::Bool(true)),
+                    "false" => self.bc.add_const(Value::Bool(false)),
+                    "+" => self.bc.add_op(Op::Add),
+                    "-" => self.bc.add_op(Op::Subtract),
+                    "*" => self.bc.add_op(Op::Multiply),
+                    "/" => self.bc.add_op(Op::Divide),
+                    _ => panic!("Unrecognized symbol: {}", x),
+                },
+                AST::Expr(x) => {
+                    for a in x.into_iter().rev() {
+                        self.compile_part(a);
+                    }
+                }
+            }
+        }
+
+        pub fn compile(mut self, ast: AST) -> ByteCode {
+            self.compile_part(ast);
+            self.bc
+        }
     }
 }
 
