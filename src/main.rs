@@ -101,25 +101,25 @@ mod vm {
 
     #[derive(Debug, PartialEq, Clone)]
     pub struct ByteCode {
-        constants: Vec<Value>,
-        bytecode: Vec<Op>,
+        consts: Vec<Value>,
+        code: Vec<Op>,
     }
 
     impl ByteCode {
         pub fn new() -> ByteCode {
             ByteCode {
-                constants: Vec::new(),
-                bytecode: Vec::new(),
+                consts: Vec::new(),
+                code: Vec::new(),
             }
         }
 
         pub fn add_op(&mut self, op: Op) {
-            self.bytecode.push(op);
+            self.code.push(op);
         }
 
         pub fn add_const(&mut self, val: Value) {
-            self.bytecode.push(Op::Const(self.constants.len()));
-            self.constants.push(val)
+            self.code.push(Op::Const(self.consts.len()));
+            self.consts.push(val)
         }
     }
 
@@ -140,7 +140,7 @@ mod vm {
 
     pub struct VM {
         ip: usize,
-        bytecode: ByteCode,
+        code: ByteCode,
         stack: Vec<Value>,
         stack_frames: Vec<usize>,
     }
@@ -149,21 +149,21 @@ mod vm {
         pub fn new() -> Self {
             VM {
                 ip: 0,
-                bytecode: ByteCode::new(),
+                code: ByteCode::new(),
                 stack: Vec::new(),
                 stack_frames: Vec::new(),
             }
         }
 
-        pub fn load(&mut self, bytecode: ByteCode) {
+        pub fn load(&mut self, code: ByteCode) {
             self.ip = 0;
-            self.bytecode = bytecode;
+            self.code = code;
             self.stack = Vec::new();
         }
 
         pub fn exec(&mut self) -> Value {
-            while self.ip < self.bytecode.bytecode.len() {
-                let op = self.bytecode.bytecode[self.ip];
+            while self.ip < self.code.code.len() {
+                let op = self.code.code[self.ip];
                 self.ip += 1;
                 match op {
                     Op::Const(i) => self.const_op(i),
@@ -187,7 +187,7 @@ mod vm {
         }
 
         fn const_op(&mut self, idx: usize) {
-            self.stack.push(self.bytecode.constants[idx].clone())
+            self.stack.push(self.code.consts[idx].clone())
         }
 
         fn add(&mut self) {
