@@ -12,7 +12,7 @@ mod interpreter {
     use super::{parse, Compiler, Value, VM};
 
     pub struct Interpreter {
-        pub vm: VM,
+        vm: VM,
     }
     impl Interpreter {
         pub fn new() -> Self {
@@ -21,8 +21,8 @@ mod interpreter {
 
         pub fn interpret(&mut self, code: &str) -> Result<Value, String> {
             let ast = parse(code)?;
-            let bc = Compiler::new().compile(ast);
-            self.vm.load(bc);
+            let code = Compiler::new().compile(ast);
+            self.vm.load(code);
             Ok(self.vm.exec())
         }
     }
@@ -49,6 +49,31 @@ mod interpreter {
             assert_eq!(ip.interpret("(+ 3 (- 2 1))"), Ok(Value::Int(4)));
             assert_eq!(ip.interpret("(* 2 (/ 3 2.0))"), Ok(Value::Float(3.0)));
         }
+
+        #[test]
+        fn test_interpret_let_expr() {
+            let mut ip = Interpreter::new();
+            assert_eq!(
+                ip.interpret("(let ((x 1) (y 2)) (- y x))"),
+                Ok(Value::Int(1))
+            );
+            assert_eq!(
+                ip.interpret("(+ 3 (let ((x 1) (y 2)) (- y x)))"),
+                Ok(Value::Int(4))
+            );
+            assert_eq!(
+                ip.interpret("(+ (let ((x 1) (y 2)) (- y x)) 3)"),
+                Ok(Value::Int(4))
+            );
+            assert_eq!(
+                ip.interpret("(let ((x 1) (y 2)) (let ((x 3) (z 4)) (+ x (+ y z))))"),
+                Ok(Value::Int(9))
+            );
+            assert_eq!(
+                ip.interpret("(let ((x 1) (y 2)) (+ (let ((x 3) (z 4)) (+ x (+ y z))) 5))"),
+                Ok(Value::Int(14))
+            );
+        }
     }
 }
 
@@ -58,6 +83,9 @@ mod vm {
     #[derive(Debug, PartialEq, Copy, Clone)]
     pub enum Op {
         Const(usize),
+        BeginFrame,
+        EndFrame,
+        GetVar(usize, usize),
         Add,
         Subtract,
         Multiply,
@@ -65,9 +93,16 @@ mod vm {
     }
 
     #[derive(Debug, PartialEq, Clone)]
+    pub struct Function {
+        name: String,
+        args: u8,
+        code: ByteCode,
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
     pub struct ByteCode {
-        pub constants: Vec<Value>,
-        pub bytecode: Vec<Op>,
+        constants: Vec<Value>,
+        bytecode: Vec<Op>,
     }
 
     impl ByteCode {
@@ -104,9 +139,10 @@ mod vm {
     }
 
     pub struct VM {
-        pub ip: usize,
-        pub bytecode: ByteCode,
-        pub stack: Vec<Value>,
+        ip: usize,
+        bytecode: ByteCode,
+        stack: Vec<Value>,
+        stack_frames: Vec<usize>,
     }
 
     impl VM {
@@ -115,6 +151,7 @@ mod vm {
                 ip: 0,
                 bytecode: ByteCode::new(),
                 stack: Vec::new(),
+                stack_frames: Vec::new(),
             }
         }
 
@@ -134,6 +171,16 @@ mod vm {
                     Op::Subtract => self.substract(),
                     Op::Multiply => self.multiply(),
                     Op::Divide => self.divide(),
+                    Op::GetVar(depth, slot) => {
+                        let abs_slot = self.stack_frames[depth] + slot;
+                        self.stack.push(self.stack[abs_slot].clone());
+                    }
+                    Op::BeginFrame => self.stack_frames.push(self.stack.len()),
+                    Op::EndFrame => {
+                        let result = self.stack.pop().unwrap();
+                        self.stack.truncate(self.stack_frames.pop().unwrap());
+                        self.stack.push(result);
+                    }
                 }
             }
             self.stack.pop().unwrap()
@@ -200,43 +247,82 @@ mod vm {
 mod compiler {
     use super::{ByteCode, Op, Value, AST};
 
+    struct Var {
+        name: String,
+        depth: usize,
+        slot: usize,
+    }
+
     pub struct Compiler {
-        bc: ByteCode,
+        code: ByteCode,
+        vars: Vec<Var>,
+        depth: usize,
     }
 
     impl Compiler {
         pub fn new() -> Self {
             Compiler {
-                bc: ByteCode::new(),
+                code: ByteCode::new(),
+                vars: Vec::new(),
+                depth: 0,
             }
         }
 
         fn compile_part(&mut self, ast: AST) {
             match ast {
-                AST::Int(x) => self.bc.add_const(Value::Int(x)),
-                AST::Float(x) => self.bc.add_const(Value::Float(x)),
-                AST::String(x) => self.bc.add_const(Value::string(&*x)),
+                AST::Int(x) => self.code.add_const(Value::Int(x)),
+                AST::Float(x) => self.code.add_const(Value::Float(x)),
+                AST::String(x) => self.code.add_const(Value::string(&*x)),
                 AST::Symbol(x) => match &*x {
-                    "nil" => self.bc.add_const(Value::Nil),
-                    "true" => self.bc.add_const(Value::Bool(true)),
-                    "false" => self.bc.add_const(Value::Bool(false)),
-                    "+" => self.bc.add_op(Op::Add),
-                    "-" => self.bc.add_op(Op::Subtract),
-                    "*" => self.bc.add_op(Op::Multiply),
-                    "/" => self.bc.add_op(Op::Divide),
-                    _ => panic!("Unrecognized symbol: {}", x),
+                    "nil" => self.code.add_const(Value::Nil),
+                    "true" => self.code.add_const(Value::Bool(true)),
+                    "false" => self.code.add_const(Value::Bool(false)),
+                    "+" => self.code.add_op(Op::Add),
+                    "-" => self.code.add_op(Op::Subtract),
+                    "*" => self.code.add_op(Op::Multiply),
+                    "/" => self.code.add_op(Op::Divide),
+                    _ => {
+                        let mut found = false;
+                        for var in self.vars.iter().rev() {
+                            if var.name == x {
+                                self.code.add_op(Op::GetVar(var.depth - 1, var.slot));
+                                found = true;
+                                break;
+                            };
+                        }
+                        if !found {
+                            panic!("Symbol not found: {}", x)
+                        }
+                    }
                 },
                 AST::Expr(x) => {
                     for a in x.into_iter().rev() {
                         self.compile_part(a);
                     }
                 }
+                AST::Let(vars, expr) => {
+                    self.depth = self.depth + 1;
+                    self.code.add_op(Op::BeginFrame);
+                    let var_count = vars.len();
+                    for (slot, (name, vexpr)) in vars.into_iter().enumerate() {
+                        self.vars.push(Var {
+                            name,
+                            slot,
+                            depth: self.depth,
+                        });
+                        self.compile_part(vexpr)
+                    }
+                    self.compile_part(*expr);
+                    self.vars.truncate(var_count);
+                    self.code.add_op(Op::EndFrame);
+                    self.depth = self.depth - 1;
+                }
             }
         }
 
         pub fn compile(mut self, ast: AST) -> ByteCode {
             self.compile_part(ast);
-            self.bc
+            self.code
         }
     }
 }
@@ -244,21 +330,24 @@ mod compiler {
 mod parser {
     use nom::{
         branch::alt,
+        bytes::complete::tag,
         character::complete::{char, i64, multispace0, one_of, satisfy},
         combinator::not,
         multi::{many0, many1},
         number::complete::double,
+        sequence::tuple,
         sequence::{delimited, preceded, terminated},
         Finish, IResult,
     };
 
-    #[derive(Debug, PartialEq)]
+    #[derive(Debug, PartialEq, Clone)]
     pub enum AST {
         Int(i64),
         Float(f64),
         String(String),
         Symbol(String),
         Expr(Vec<AST>),
+        Let(Vec<(String, AST)>, Box<AST>),
     }
 
     fn parse_int() -> impl Fn(&str) -> IResult<&str, AST> {
@@ -289,13 +378,20 @@ mod parser {
         }
     }
 
-    fn parse_symbol() -> impl Fn(&str) -> IResult<&str, AST> {
+    fn parse_symbol_string() -> impl Fn(&str) -> IResult<&str, String> {
         |i| {
             let (r, o) = alt((
                 many1(one_of("<>!@#$%^&*-+/=?|\\;:~")),
                 many1(satisfy(|x| x.is_ascii_alphabetic())),
             ))(i)?;
-            Ok((r, AST::Symbol(o.into_iter().collect())))
+            Ok((r, o.into_iter().collect()))
+        }
+    }
+
+    fn parse_symbol() -> impl Fn(&str) -> IResult<&str, AST> {
+        |i| {
+            let (r, o) = parse_symbol_string()(i)?;
+            Ok((r, AST::Symbol(o)))
         }
     }
 
@@ -310,6 +406,33 @@ mod parser {
         }
     }
 
+    fn parse_let() -> impl Fn(&str) -> IResult<&str, AST> {
+        |i| {
+            let (r, (_, _, x, y, _)) = tuple((
+                char('('),
+                preceded(multispace0, tag("let")),
+                preceded(
+                    multispace0,
+                    delimited(
+                        char('('),
+                        many1(preceded(
+                            multispace0,
+                            delimited(
+                                char('('),
+                                preceded(multispace0, tuple((parse_symbol_string(), parse_ast()))),
+                                preceded(multispace0, char(')')),
+                            ),
+                        )),
+                        preceded(multispace0, char(')')),
+                    ),
+                ),
+                parse_ast(),
+                preceded(multispace0, char(')')),
+            ))(i)?;
+            Ok((r, AST::Let(x, Box::new(y))))
+        }
+    }
+
     fn parse_ast() -> impl Fn(&str) -> IResult<&str, AST> {
         |i| {
             preceded(
@@ -319,6 +442,7 @@ mod parser {
                     parse_float(),
                     parse_string(),
                     parse_symbol(),
+                    parse_let(),
                     parse_expr(),
                 )),
             )(i)
@@ -383,6 +507,20 @@ mod parser {
                 AST::Symbol(String::from("x")),
             ];
             assert_eq!(parse("(fn (x) x)"), Ok(AST::Expr(expr2)));
+        }
+
+        #[test]
+        fn test_parse_let() {
+            assert_eq!(
+                parse("(let ((x 1) (y 2)) x)"),
+                Ok(AST::Let(
+                    vec![
+                        (String::from("x"), AST::Int(1)),
+                        (String::from("y"), AST::Int(2))
+                    ],
+                    Box::new(AST::Symbol("x".into()))
+                ))
+            );
         }
     }
 }
