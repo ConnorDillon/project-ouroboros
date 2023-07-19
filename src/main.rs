@@ -247,6 +247,7 @@ mod vm {
 mod compiler {
     use super::{ByteCode, Op, Value, AST};
 
+    #[derive(Debug, PartialEq, Clone)]
     struct Var {
         name: String,
         depth: usize,
@@ -291,7 +292,7 @@ mod compiler {
                             };
                         }
                         if !found {
-                            panic!("Symbol not found: {}", x)
+                            panic!("Symbol {} not found in {:?} {}", x, self.vars, self.depth)
                         }
                     }
                 },
@@ -333,11 +334,12 @@ mod parser {
         bytes::complete::tag,
         character::complete::{char, i64, multispace0, one_of, satisfy},
         combinator::not,
+        error::ParseError,
         multi::{many0, many1},
         number::complete::double,
         sequence::tuple,
         sequence::{delimited, preceded, terminated},
-        Finish, IResult,
+        Finish, IResult, Parser,
     };
 
     #[derive(Debug, PartialEq, Clone)]
@@ -350,16 +352,25 @@ mod parser {
         Let(Vec<(String, AST)>, Box<AST>),
     }
 
+    fn lexeme<'a, O, E: ParseError<&'a str>, F>(
+        parser: F,
+    ) -> impl FnMut(&'a str) -> IResult<&'a str, O, E>
+    where
+        F: Parser<&'a str, O, E>,
+    {
+        preceded(multispace0, parser)
+    }
+
     fn parse_int() -> impl Fn(&str) -> IResult<&str, AST> {
         |i| {
-            let (r, o) = terminated(i64, not(char('.')))(i)?;
+            let (r, o) = lexeme(terminated(i64, not(char('.'))))(i)?;
             Ok((r, AST::Int(o)))
         }
     }
 
     fn parse_float() -> impl Fn(&str) -> IResult<&str, AST> {
         |i| {
-            let (r, o) = double(i)?;
+            let (r, o) = lexeme(double)(i)?;
             Ok((r, AST::Float(o)))
         }
     }
@@ -367,12 +378,12 @@ mod parser {
     fn parse_string() -> impl Fn(&str) -> IResult<&str, AST> {
         |i| {
             let (r, o) = delimited(
-                char('"'),
-                many0(alt((
+                lexeme(char('"')),
+                lexeme(many0(alt((
                     preceded(char('\\'), char('"')),
                     satisfy(|x| x != '"'),
-                ))),
-                char('"'),
+                )))),
+                lexeme(char('"')),
             )(i)?;
             Ok((r, AST::String(o.into_iter().collect())))
         }
@@ -380,10 +391,10 @@ mod parser {
 
     fn parse_symbol_string() -> impl Fn(&str) -> IResult<&str, String> {
         |i| {
-            let (r, o) = alt((
+            let (r, o) = lexeme(alt((
                 many1(one_of("<>!@#$%^&*-+/=?|\\;:~")),
                 many1(satisfy(|x| x.is_ascii_alphabetic())),
-            ))(i)?;
+            )))(i)?;
             Ok((r, o.into_iter().collect()))
         }
     }
@@ -397,11 +408,7 @@ mod parser {
 
     fn parse_expr() -> impl Fn(&str) -> IResult<&str, AST> {
         |i| {
-            let (r, o) = delimited(
-                char('('),
-                many0(parse_ast()),
-                preceded(multispace0, char(')')),
-            )(i)?;
+            let (r, o) = delimited(lexeme(char('(')), many0(parse_ast()), lexeme(char(')')))(i)?;
             Ok((r, AST::Expr(o)))
         }
     }
@@ -409,25 +416,19 @@ mod parser {
     fn parse_let() -> impl Fn(&str) -> IResult<&str, AST> {
         |i| {
             let (r, (_, _, x, y, _)) = tuple((
-                char('('),
-                preceded(multispace0, tag("let")),
-                preceded(
-                    multispace0,
-                    delimited(
-                        char('('),
-                        many1(preceded(
-                            multispace0,
-                            delimited(
-                                char('('),
-                                preceded(multispace0, tuple((parse_symbol_string(), parse_ast()))),
-                                preceded(multispace0, char(')')),
-                            ),
-                        )),
-                        preceded(multispace0, char(')')),
-                    ),
+                lexeme(char('(')),
+                lexeme(tag("let")),
+                delimited(
+                    lexeme(char('(')),
+                    many1(delimited(
+                        lexeme(char('(')),
+                        tuple((parse_symbol_string(), parse_ast())),
+                        lexeme(char(')')),
+                    )),
+                    lexeme(char(')')),
                 ),
                 parse_ast(),
-                preceded(multispace0, char(')')),
+                lexeme(char(')')),
             ))(i)?;
             Ok((r, AST::Let(x, Box::new(y))))
         }
@@ -435,17 +436,14 @@ mod parser {
 
     fn parse_ast() -> impl Fn(&str) -> IResult<&str, AST> {
         |i| {
-            preceded(
-                multispace0,
-                alt((
-                    parse_int(),
-                    parse_float(),
-                    parse_string(),
-                    parse_symbol(),
-                    parse_let(),
-                    parse_expr(),
-                )),
-            )(i)
+            alt((
+                parse_int(),
+                parse_float(),
+                parse_string(),
+                parse_symbol(),
+                parse_let(),
+                parse_expr(),
+            ))(i)
         }
     }
 
