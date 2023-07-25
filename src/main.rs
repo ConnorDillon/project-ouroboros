@@ -1,15 +1,19 @@
+use crate::parser::parse;
 use compiler::Compiler;
 use interpreter::Interpreter;
-use parser::{parse, AST};
-use vm::{ByteCode, Op, Value, VM};
 
 fn main() {
     let mut ip = Interpreter::new();
     println!("{:?}", ip.interpret("1").unwrap());
+    let ast = parse("((fn (x) (fn (y) (+ 1 y))) 1 2)").unwrap();
+    let code = Compiler::new().compile(ast);
+    println!("{:?}", code)
 }
 
 mod interpreter {
-    use super::{parse, Compiler, Value, VM};
+    use crate::compiler::Compiler;
+    use crate::parser::parse;
+    use crate::vm::{Value, VM};
 
     pub struct Interpreter {
         vm: VM,
@@ -74,11 +78,76 @@ mod interpreter {
                 Ok(Value::Int(14))
             );
         }
+
+        #[test]
+        fn test_interpret_fn() {
+            let mut ip = Interpreter::new();
+            assert_eq!(ip.interpret("((fn (x) (+ x 1)) 2)"), Ok(Value::Int(3)));
+            assert_eq!(ip.interpret("((fn (x y) (+ x y)) 1 2)"), Ok(Value::Int(3)));
+            assert_eq!(
+                ip.interpret("(((fn (x y) ((+ x) y)) 1) 2)"),
+                Ok(Value::Int(3))
+            );
+            assert_eq!(
+                ip.interpret("((fn (f x) (f x)) (fn (x) (+ 1 x)) 2)"),
+                Ok(Value::Int(3))
+            );
+            assert_eq!(
+                ip.interpret("((fn (f x y) (f x y)) + 1 2)"),
+                Ok(Value::Int(3))
+            );
+        }
+    }
+}
+
+mod builtin {
+    use crate::vm::Value;
+
+    pub fn add(x: Value, y: Value) -> Value {
+        match (x, y) {
+            (Value::Int(x), Value::Int(y)) => Value::Int(x + y),
+            (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
+            (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 + y),
+            (Value::Float(x), Value::Int(y)) => Value::Float(x + y as f64),
+            (x, y) => panic!("Type Error: (+ {:?} {:?})", x, y),
+        }
+    }
+
+    pub fn subtract(x: Value, y: Value) -> Value {
+        match (x, y) {
+            (Value::Int(x), Value::Int(y)) => Value::Int(x - y),
+            (Value::Float(x), Value::Float(y)) => Value::Float(x - y),
+            (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 - y),
+            (Value::Float(x), Value::Int(y)) => Value::Float(x - y as f64),
+            (x, y) => panic!("Type Error: (+ {:?} {:?})", x, y),
+        }
+    }
+
+    pub fn multiply(x: Value, y: Value) -> Value {
+        match (x, y) {
+            (Value::Int(x), Value::Int(y)) => Value::Int(x * y),
+            (Value::Float(x), Value::Float(y)) => Value::Float(x * y),
+            (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 * y),
+            (Value::Float(x), Value::Int(y)) => Value::Float(x * y as f64),
+            (x, y) => panic!("Type Error: (+ {:?} {:?})", x, y),
+        }
+    }
+
+    pub fn divide(x: Value, y: Value) -> Value {
+        match (x, y) {
+            (Value::Int(x), Value::Int(y)) => Value::Int(x / y),
+            (Value::Float(x), Value::Float(y)) => Value::Float(x / y),
+            (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 / y),
+            (Value::Float(x), Value::Int(y)) => Value::Float(x / y as f64),
+            (x, y) => panic!("Type Error: (+ {:?} {:?})", x, y),
+        }
     }
 }
 
 mod vm {
     use std::rc::Rc;
+
+    use crate::builtin;
 
     #[derive(Debug, PartialEq, Copy, Clone)]
     pub enum Op {
@@ -86,30 +155,41 @@ mod vm {
         BeginFrame,
         EndFrame,
         GetVar(usize, usize),
+        Return,
+        Apply(u8),
+        Function(u8, Function),
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
+    pub struct FunctionDef {
+        pub entry: usize,
+        pub args: u8,
+    }
+
+    #[derive(Debug, PartialEq, Copy, Clone)]
+    pub enum Function {
         Add,
         Subtract,
         Multiply,
         Divide,
-    }
-
-    #[derive(Debug, PartialEq, Clone)]
-    pub struct Function {
-        name: String,
-        args: u8,
-        code: ByteCode,
+        Defined(usize),
     }
 
     #[derive(Debug, PartialEq, Clone)]
     pub struct ByteCode {
-        consts: Vec<Value>,
-        code: Vec<Op>,
+        pub consts: Vec<Value>,
+        pub funs: Vec<FunctionDef>,
+        pub code: Vec<Op>,
+        pub entry: usize,
     }
 
     impl ByteCode {
         pub fn new() -> ByteCode {
             ByteCode {
                 consts: Vec::new(),
+                funs: Vec::new(),
                 code: Vec::new(),
+                entry: 0,
             }
         }
 
@@ -124,17 +204,41 @@ mod vm {
     }
 
     #[derive(Debug, PartialEq, Clone)]
+    pub struct Closure {
+        closed_vals: Rc<Vec<Value>>,
+        fun_args: u8,
+        fun: Function,
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
     pub enum Value {
         Nil,
         Bool(bool),
         Int(i64),
         Float(f64),
         String(Rc<str>),
+        Closure(Closure),
     }
 
     impl Value {
+        pub fn closure(vals: Vec<Value>, fun_args: u8, fun: Function) -> Value {
+            Value::Closure(Closure {
+                closed_vals: Rc::new(vals),
+                fun_args,
+                fun,
+            })
+        }
+
         pub fn string(s: &str) -> Value {
             Value::String(Rc::from(s))
+        }
+
+        pub fn to_closure(&self) -> Closure {
+            if let Value::Closure(c) = self {
+                c.clone()
+            } else {
+                panic!("Expected closure but found: {:?}", self)
+            }
         }
     }
 
@@ -142,7 +246,13 @@ mod vm {
         ip: usize,
         code: ByteCode,
         stack: Vec<Value>,
-        stack_frames: Vec<usize>,
+        call_frames: Vec<CallFrame>,
+    }
+
+    struct CallFrame {
+        stack_ptr: usize,
+        return_ptr: usize,
+        closed_args: u8,
     }
 
     impl VM {
@@ -151,14 +261,78 @@ mod vm {
                 ip: 0,
                 code: ByteCode::new(),
                 stack: Vec::new(),
-                stack_frames: Vec::new(),
+                call_frames: Vec::new(),
             }
         }
 
         pub fn load(&mut self, code: ByteCode) {
-            self.ip = 0;
+            self.ip = code.entry;
             self.code = code;
             self.stack = Vec::new();
+        }
+
+        fn pop_val(&mut self, closure: &Closure, slot: usize) -> Value {
+            closure
+                .closed_vals
+                .get(slot)
+                .cloned()
+                .or(self.stack.pop())
+                .unwrap()
+        }
+
+        fn get_var(&mut self, depth: usize, slot: usize) {
+            let frame = &self.call_frames[self.call_frames.len() - 1 - depth];
+            let var = if frame.closed_args == 0 {
+                self.stack[frame.stack_ptr + slot].clone()
+            } else if slot < (frame.closed_args as usize) {
+                let closure = self.stack[frame.stack_ptr - 1].to_closure();
+                closure.closed_vals[slot].clone()
+            } else {
+                let abs_slot = frame.stack_ptr + (slot - frame.closed_args as usize);
+                self.stack[abs_slot].clone()
+            };
+            self.stack.push(var);
+        }
+
+        fn apply2(&mut self, closure: &Closure, f: fn(Value, Value) -> Value) {
+            let y = self.pop_val(closure, 1);
+            let x = self.pop_val(closure, 0);
+            self.stack.pop();
+            self.stack.push(f(x, y));
+        }
+
+        fn apply(&mut self, ap_args: u8) {
+            let stack_ptr = self.stack.len() - (ap_args as usize);
+            let cl = self.stack[stack_ptr - 1].to_closure();
+            let cur_args = cl.closed_vals.len() as u8 + ap_args;
+            if cur_args < cl.fun_args {
+                let mut vals = Vec::with_capacity(cur_args as usize);
+                vals.extend(
+                    cl.closed_vals
+                        .iter()
+                        .cloned()
+                        .chain(self.stack.drain(stack_ptr..)),
+                );
+                self.stack.pop();
+                self.stack.push(Value::closure(vals, cl.fun_args, cl.fun));
+            } else if cur_args > cl.fun_args {
+                // multiple applies
+            } else {
+                match cl.fun {
+                    Function::Add => self.apply2(&cl, builtin::add),
+                    Function::Subtract => self.apply2(&cl, builtin::subtract),
+                    Function::Multiply => self.apply2(&cl, builtin::multiply),
+                    Function::Divide => self.apply2(&cl, builtin::divide),
+                    Function::Defined(ip) => {
+                        self.call_frames.push(CallFrame {
+                            stack_ptr,
+                            return_ptr: self.ip,
+                            closed_args: cl.closed_vals.len() as u8,
+                        });
+                        self.ip = ip;
+                    }
+                }
+            }
         }
 
         pub fn exec(&mut self) -> Value {
@@ -167,18 +341,25 @@ mod vm {
                 self.ip += 1;
                 match op {
                     Op::Const(i) => self.const_op(i),
-                    Op::Add => self.add(),
-                    Op::Subtract => self.substract(),
-                    Op::Multiply => self.multiply(),
-                    Op::Divide => self.divide(),
-                    Op::GetVar(depth, slot) => {
-                        let abs_slot = self.stack_frames[depth] + slot;
-                        self.stack.push(self.stack[abs_slot].clone());
+                    Op::Function(a, f) => self.stack.push(Value::closure(Vec::new(), a, f)),
+                    Op::Apply(ap_args) => self.apply(ap_args),
+                    Op::Return => {
+                        let frame = self.call_frames.pop().unwrap();
+                        let result = self.stack.pop().unwrap();
+                        self.stack.truncate(frame.stack_ptr - 1);
+                        self.stack.push(result);
+                        self.ip = frame.return_ptr;
                     }
-                    Op::BeginFrame => self.stack_frames.push(self.stack.len()),
+                    Op::GetVar(depth, slot) => self.get_var(depth, slot),
+                    Op::BeginFrame => self.call_frames.push(CallFrame {
+                        stack_ptr: self.stack.len(),
+                        return_ptr: 0,
+                        closed_args: 0,
+                    }),
                     Op::EndFrame => {
                         let result = self.stack.pop().unwrap();
-                        self.stack.truncate(self.stack_frames.pop().unwrap());
+                        self.stack
+                            .truncate(self.call_frames.pop().unwrap().stack_ptr);
                         self.stack.push(result);
                     }
                 }
@@ -189,63 +370,12 @@ mod vm {
         fn const_op(&mut self, idx: usize) {
             self.stack.push(self.code.consts[idx].clone())
         }
-
-        fn add(&mut self) {
-            let x = self.stack.pop().unwrap();
-            let y = self.stack.pop().unwrap();
-            let z = match (x, y) {
-                (Value::Int(x), Value::Int(y)) => Value::Int(x + y),
-                (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
-                (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 + y),
-                (Value::Float(x), Value::Int(y)) => Value::Float(x + y as f64),
-                (x, y) => panic!("Type Error: (+ {:?} {:?})", x, y),
-            };
-            self.stack.push(z);
-        }
-
-        fn substract(&mut self) {
-            let x = self.stack.pop().unwrap();
-            let y = self.stack.pop().unwrap();
-            let z = match (x, y) {
-                (Value::Int(x), Value::Int(y)) => Value::Int(x - y),
-                (Value::Float(x), Value::Float(y)) => Value::Float(x - y),
-                (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 - y),
-                (Value::Float(x), Value::Int(y)) => Value::Float(x - y as f64),
-                (x, y) => panic!("Type Error: (- {:?} {:?})", x, y),
-            };
-            self.stack.push(z);
-        }
-
-        fn multiply(&mut self) {
-            let x = self.stack.pop().unwrap();
-            let y = self.stack.pop().unwrap();
-            let z = match (x, y) {
-                (Value::Int(x), Value::Int(y)) => Value::Int(x * y),
-                (Value::Float(x), Value::Float(y)) => Value::Float(x * y),
-                (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 * y),
-                (Value::Float(x), Value::Int(y)) => Value::Float(x * y as f64),
-                (x, y) => panic!("Type Error: (* {:?} {:?})", x, y),
-            };
-            self.stack.push(z);
-        }
-
-        fn divide(&mut self) {
-            let x = self.stack.pop().unwrap();
-            let y = self.stack.pop().unwrap();
-            let z = match (x, y) {
-                (Value::Int(x), Value::Int(y)) => Value::Int(x / y),
-                (Value::Float(x), Value::Float(y)) => Value::Float(x / y),
-                (Value::Int(x), Value::Float(y)) => Value::Float(x as f64 / y),
-                (Value::Float(x), Value::Int(y)) => Value::Float(x / y as f64),
-                (x, y) => panic!("Type Error: (/ {:?} {:?})", x, y),
-            };
-            self.stack.push(z);
-        }
     }
 }
 
 mod compiler {
-    use super::{ByteCode, Op, Value, AST};
+    use crate::ast::{Fun, AST};
+    use crate::vm::{ByteCode, Function, FunctionDef, Op, Value};
 
     #[derive(Debug, PartialEq, Clone)]
     struct Var {
@@ -269,7 +399,7 @@ mod compiler {
             }
         }
 
-        fn compile_part(&mut self, ast: AST) {
+        fn compile_part(&mut self, ast: AST<usize>) {
             match ast {
                 AST::Int(x) => self.code.add_const(Value::Int(x)),
                 AST::Float(x) => self.code.add_const(Value::Float(x)),
@@ -278,15 +408,16 @@ mod compiler {
                     "nil" => self.code.add_const(Value::Nil),
                     "true" => self.code.add_const(Value::Bool(true)),
                     "false" => self.code.add_const(Value::Bool(false)),
-                    "+" => self.code.add_op(Op::Add),
-                    "-" => self.code.add_op(Op::Subtract),
-                    "*" => self.code.add_op(Op::Multiply),
-                    "/" => self.code.add_op(Op::Divide),
+                    "+" => self.code.add_op(Op::Function(2, Function::Add)),
+                    "-" => self.code.add_op(Op::Function(2, Function::Subtract)),
+                    "*" => self.code.add_op(Op::Function(2, Function::Multiply)),
+                    "/" => self.code.add_op(Op::Function(2, Function::Divide)),
                     _ => {
                         let mut found = false;
                         for var in self.vars.iter().rev() {
                             if var.name == x {
-                                self.code.add_op(Op::GetVar(var.depth - 1, var.slot));
+                                self.code
+                                    .add_op(Op::GetVar(self.depth - var.depth, var.slot));
                                 found = true;
                                 break;
                             };
@@ -297,9 +428,11 @@ mod compiler {
                     }
                 },
                 AST::Expr(x) => {
-                    for a in x.into_iter().rev() {
+                    let args = x.len() - 1;
+                    for a in x.into_iter() {
                         self.compile_part(a);
                     }
+                    self.code.add_op(Op::Apply(args as u8));
                 }
                 AST::Let(vars, expr) => {
                     self.depth = self.depth + 1;
@@ -318,17 +451,102 @@ mod compiler {
                     self.code.add_op(Op::EndFrame);
                     self.depth = self.depth - 1;
                 }
+                AST::Fn(i) => {
+                    let f = &self.code.funs[i];
+                    self.code
+                        .add_op(Op::Function(f.args, Function::Defined(f.entry)))
+                }
             }
         }
 
-        pub fn compile(mut self, ast: AST) -> ByteCode {
-            self.compile_part(ast);
+        pub fn compile(mut self, ast: AST<Fun>) -> ByteCode {
+            let lifted_ast = ast.lift_lambdas();
+            for fun in lifted_ast.funs {
+                let entry = self.code.code.len();
+                self.code.funs.push(FunctionDef {
+                    args: fun.args.len() as u8,
+                    entry,
+                });
+                for (slot, name) in fun.args.into_iter().enumerate() {
+                    self.vars.push(Var {
+                        name,
+                        slot,
+                        depth: 0,
+                    });
+                }
+                self.compile_part(fun.body);
+                self.code.add_op(Op::Return);
+                self.vars.truncate(0);
+            }
+            let entry = self.code.code.len();
+            self.compile_part(lifted_ast.ast);
+            self.code.entry = entry;
             self.code
         }
     }
 }
 
+mod ast {
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum AST<T> {
+        Int(i64),
+        Float(f64),
+        String(String),
+        Symbol(String),
+        Expr(Vec<AST<T>>),
+        Let(Vec<(String, AST<T>)>, Box<AST<T>>),
+        Fn(T),
+    }
+
+    impl AST<Fun> {
+        pub fn lift_lambdas(self) -> LiftedAST {
+            let mut funs = Vec::new();
+            let ast = lift(&mut funs, self);
+            LiftedAST { funs, ast }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
+    pub struct Fun {
+        pub args: Vec<String>,
+        pub body: Box<AST<Fun>>,
+    }
+
+    pub struct LiftedAST {
+        pub funs: Vec<LiftedFun>,
+        pub ast: AST<usize>,
+    }
+
+    pub struct LiftedFun {
+        pub args: Vec<String>,
+        pub body: AST<usize>,
+    }
+
+    fn lift(funs: &mut Vec<LiftedFun>, ast: AST<Fun>) -> AST<usize> {
+        match ast {
+            AST::Fn(f) => {
+                let body = lift(funs, *f.body);
+                let lf = LiftedFun { args: f.args, body };
+                let idx = funs.len();
+                funs.push(lf);
+                AST::Fn(idx)
+            }
+            AST::Expr(x) => AST::Expr(x.into_iter().map(|x| lift(funs, x)).collect()),
+            AST::Let(vars, expr) => AST::Let(
+                vars.into_iter().map(|(x, y)| (x, lift(funs, y))).collect(),
+                Box::new(lift(funs, *expr)),
+            ),
+            AST::Int(x) => AST::Int(x),
+            AST::Float(x) => AST::Float(x),
+            AST::String(x) => AST::String(x),
+            AST::Symbol(x) => AST::Symbol(x),
+        }
+    }
+}
+
 mod parser {
+    use crate::ast;
+    type AST = ast::AST<ast::Fun>;
     use nom::{
         branch::alt,
         bytes::complete::tag,
@@ -341,16 +559,6 @@ mod parser {
         sequence::{delimited, preceded, terminated},
         Finish, IResult, Parser,
     };
-
-    #[derive(Debug, PartialEq, Clone)]
-    pub enum AST {
-        Int(i64),
-        Float(f64),
-        String(String),
-        Symbol(String),
-        Expr(Vec<AST>),
-        Let(Vec<(String, AST)>, Box<AST>),
-    }
 
     fn lexeme<'a, O, E: ParseError<&'a str>, F>(
         parser: F,
@@ -434,6 +642,29 @@ mod parser {
         }
     }
 
+    fn parse_fn() -> impl Fn(&str) -> IResult<&str, AST> {
+        |i| {
+            let (r, (_, _, args, body, _)) = tuple((
+                lexeme(char('(')),
+                lexeme(tag("fn")),
+                delimited(
+                    lexeme(char('(')),
+                    many1(parse_symbol_string()),
+                    lexeme(char(')')),
+                ),
+                parse_ast(),
+                lexeme(char(')')),
+            ))(i)?;
+            Ok((
+                r,
+                AST::Fn(ast::Fun {
+                    args,
+                    body: Box::new(body),
+                }),
+            ))
+        }
+    }
+
     fn parse_ast() -> impl Fn(&str) -> IResult<&str, AST> {
         |i| {
             alt((
@@ -442,6 +673,7 @@ mod parser {
                 parse_string(),
                 parse_symbol(),
                 parse_let(),
+                parse_fn(),
                 parse_expr(),
             ))(i)
         }
@@ -456,7 +688,7 @@ mod parser {
 
     #[cfg(test)]
     mod tests {
-        use super::{parse, AST};
+        use super::{ast, parse, AST};
 
         #[test]
         fn test_parse_int() {
@@ -498,13 +730,17 @@ mod parser {
         fn test_parse_expr() {
             let expr1 = vec![AST::Symbol(String::from("+")), AST::Int(1), AST::Int(2)];
             assert_eq!(parse("(+ 1 2)"), Ok(AST::Expr(expr1)));
+        }
 
-            let expr2 = vec![
-                AST::Symbol(String::from("fn")),
-                AST::Expr(vec![AST::Symbol(String::from("x"))]),
-                AST::Symbol(String::from("x")),
-            ];
-            assert_eq!(parse("(fn (x) x)"), Ok(AST::Expr(expr2)));
+        #[test]
+        fn test_parse_fn() {
+            assert_eq!(
+                parse("(fn (x) x)"),
+                Ok(AST::Fn(ast::Fun {
+                    args: vec![String::from("x")],
+                    body: Box::new(AST::Symbol(String::from("x"))),
+                }))
+            );
         }
 
         #[test]
