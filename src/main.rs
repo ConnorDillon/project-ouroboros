@@ -1,11 +1,12 @@
-use crate::parser::parse;
+use parser::parse;
 use compiler::Compiler;
 use interpreter::Interpreter;
 
 fn main() {
     let mut ip = Interpreter::new();
     println!("{:?}", ip.interpret("1").unwrap());
-    let ast = parse("((fn (x) (fn (y) y)) 1 2)").unwrap();
+    let ast = parse("((fn (x) (+ x 1)) 2)").unwrap();
+    println!("{:?}", ast.free_vars());
     let code = Compiler::new().compile(ast);
     println!("{:?}", code)
 }
@@ -97,12 +98,21 @@ mod interpreter {
                 Ok(Value::Int(3))
             );
             assert_eq!(ip.interpret("((fn (x) (fn (y) y)) 1 2)"), Ok(Value::Int(2)));
+            assert_eq!(ip.interpret("((fn (x) (fn (y) (+ x y))) 1 2)"), Ok(Value::Int(3)));
         }
     }
 }
 
 mod builtin {
     use crate::vm::Value;
+    use std::collections::hash_set::HashSet;
+
+    pub fn symbols() -> HashSet<String> {
+        vec!["+", "*", "-", "/"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
 
     pub fn add(x: Value, y: Value) -> Value {
         match (x, y) {
@@ -210,8 +220,6 @@ mod vm {
         fun_args: u8,
         fun: Function,
     }
-
-    impl Closure {}
 
     #[derive(Debug, PartialEq, Clone)]
     pub enum Value {
@@ -512,6 +520,9 @@ mod compiler {
 }
 
 mod ast {
+    use crate::builtin::symbols;
+    use std::collections::hash_set::HashSet;
+
     #[derive(Debug, PartialEq, Clone)]
     pub enum AST<T> {
         Int(i64),
@@ -529,12 +540,37 @@ mod ast {
             let ast = lift(&mut funs, self);
             LiftedAST { funs, ast }
         }
+
+        pub fn free_vars(&self) -> HashSet<String> {
+            match self {
+                AST::Symbol(s) => {
+                    let mut hs = HashSet::with_capacity(1);
+                    hs.insert(s.clone());
+                    hs
+                }
+                AST::Fn(f) => f.free_vars(),
+                AST::Let(bs, e) => {
+                    let fvs: HashSet<String> =
+                        bs.iter().map(|(_, e)| e.free_vars()).flatten().collect();
+                    fvs.union(&e.free_vars()).cloned().collect()
+                }
+                AST::Expr(es) => es.iter().map(|e| e.free_vars()).flatten().collect(),
+                _ => HashSet::new(),
+            }
+        }
     }
 
     #[derive(Debug, PartialEq, Clone)]
     pub struct Fun {
         pub args: Vec<String>,
         pub body: Box<AST<Fun>>,
+    }
+
+    impl Fun {
+        fn free_vars(&self) -> HashSet<String> {
+            let bound = self.args.iter().chain(symbols().iter()).cloned().collect();
+            self.body.free_vars().difference(&bound).cloned().collect()
+        }
     }
 
     pub struct LiftedAST {
@@ -550,11 +586,21 @@ mod ast {
     fn lift(funs: &mut Vec<LiftedFun>, ast: AST<Fun>) -> AST<usize> {
         match ast {
             AST::Fn(f) => {
+                let free_vars = f.free_vars();
+                let mut args = Vec::with_capacity(free_vars.len() + f.args.len());
+                args.extend(free_vars.iter().cloned().chain(f.args.into_iter()));
                 let body = lift(funs, *f.body);
-                let lf = LiftedFun { args: f.args, body };
+                let lf = LiftedFun { args, body };
                 let idx = funs.len();
                 funs.push(lf);
-                AST::Fn(idx)
+                let fun = AST::Fn(idx);
+                if free_vars.len() > 0 {
+                    let mut expr = vec![fun];
+                    expr.extend(free_vars.into_iter().map(AST::Symbol));
+                    AST::Expr(expr)
+                } else {
+                    fun
+                }
             }
             AST::Expr(x) => AST::Expr(x.into_iter().map(|x| lift(funs, x)).collect()),
             AST::Let(vars, expr) => AST::Let(
@@ -565,6 +611,17 @@ mod ast {
             AST::Float(x) => AST::Float(x),
             AST::String(x) => AST::String(x),
             AST::Symbol(x) => AST::Symbol(x),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use crate::parser::parse;
+
+        #[test]
+        fn test_free_vars() {
+            assert_eq!(parse("(fn (x) x))").unwrap().free_vars().len(), 0);
+            assert_eq!(parse("(fn (x) (+ x y))").unwrap().free_vars().len(), 1);
         }
     }
 }
