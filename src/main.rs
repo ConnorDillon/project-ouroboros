@@ -5,7 +5,7 @@ use interpreter::Interpreter;
 fn main() {
     let mut ip = Interpreter::new();
     println!("{:?}", ip.interpret("1").unwrap());
-    let ast = parse("((fn (x) (fn (y) (+ 1 y))) 1 2)").unwrap();
+    let ast = parse("((fn (x) (fn (y) y)) 1 2)").unwrap();
     let code = Compiler::new().compile(ast);
     println!("{:?}", code)
 }
@@ -96,6 +96,7 @@ mod interpreter {
                 ip.interpret("((fn (f x y) (f x y)) + 1 2)"),
                 Ok(Value::Int(3))
             );
+            assert_eq!(ip.interpret("((fn (x) (fn (y) y)) 1 2)"), Ok(Value::Int(2)));
         }
     }
 }
@@ -210,6 +211,8 @@ mod vm {
         fun: Function,
     }
 
+    impl Closure {}
+
     #[derive(Debug, PartialEq, Clone)]
     pub enum Value {
         Nil,
@@ -233,7 +236,7 @@ mod vm {
             Value::String(Rc::from(s))
         }
 
-        pub fn to_closure(&self) -> Closure {
+        pub fn to_closure(self) -> Closure {
             if let Value::Closure(c) = self {
                 c.clone()
             } else {
@@ -252,7 +255,33 @@ mod vm {
     struct CallFrame {
         stack_ptr: usize,
         return_ptr: usize,
-        closed_args: u8,
+        extra_args: u8,
+        closure: Option<Closure>,
+    }
+
+    struct Popper<'a> {
+        closure: &'a Closure,
+        stack: &'a mut Vec<Value>,
+        top: usize,
+    }
+
+    impl<'a> Popper<'a> {
+        fn new(closure: &'a Closure, stack: &'a mut Vec<Value>) -> Self {
+            Popper {
+                closure,
+                stack,
+                top: closure.closed_vals.len(),
+            }
+        }
+
+        fn pop(&mut self) -> Value {
+            if self.top > 0 {
+                self.top -= 1;
+                self.closure.closed_vals[self.top].clone()
+            } else {
+                self.stack.pop().unwrap()
+            }
+        }
     }
 
     impl VM {
@@ -271,63 +300,54 @@ mod vm {
             self.stack = Vec::new();
         }
 
-        fn pop_val(&mut self, closure: &Closure, slot: usize) -> Value {
-            closure
-                .closed_vals
-                .get(slot)
-                .cloned()
-                .or(self.stack.pop())
-                .unwrap()
-        }
-
         fn get_var(&mut self, depth: usize, slot: usize) {
             let frame = &self.call_frames[self.call_frames.len() - 1 - depth];
-            let var = if frame.closed_args == 0 {
-                self.stack[frame.stack_ptr + slot].clone()
-            } else if slot < (frame.closed_args as usize) {
-                let closure = self.stack[frame.stack_ptr - 1].to_closure();
-                closure.closed_vals[slot].clone()
+            let var = if let Some(closure) = &frame.closure {
+                let stack_args = closure.fun_args as usize - closure.closed_vals.len();
+                if slot >= stack_args {
+                    closure.closed_vals[slot - stack_args].clone()
+                } else {
+                    self.stack[frame.stack_ptr + slot].clone()
+                }
             } else {
-                let abs_slot = frame.stack_ptr + (slot - frame.closed_args as usize);
-                self.stack[abs_slot].clone()
+                self.stack[frame.stack_ptr + slot].clone()
             };
             self.stack.push(var);
         }
 
-        fn apply2(&mut self, closure: &Closure, f: fn(Value, Value) -> Value) {
-            let y = self.pop_val(closure, 1);
-            let x = self.pop_val(closure, 0);
-            self.stack.pop();
+        fn apply2(&mut self, closure: Closure, f: fn(Value, Value) -> Value) {
+            let mut popper = Popper::new(&closure, &mut self.stack);
+            let x = popper.pop();
+            let y = popper.pop();
             self.stack.push(f(x, y));
         }
 
         fn apply(&mut self, ap_args: u8) {
-            let stack_ptr = self.stack.len() - (ap_args as usize);
-            let cl = self.stack[stack_ptr - 1].to_closure();
+            let cl = self.stack.pop().unwrap().to_closure();
             let cur_args = cl.closed_vals.len() as u8 + ap_args;
             if cur_args < cl.fun_args {
+                let stack_ptr = self.stack.len() - (ap_args as usize);
                 let mut vals = Vec::with_capacity(cur_args as usize);
                 vals.extend(
-                    cl.closed_vals
-                        .iter()
-                        .cloned()
-                        .chain(self.stack.drain(stack_ptr..)),
+                    self.stack
+                        .drain(stack_ptr..)
+                        .chain(cl.closed_vals.iter().cloned()),
                 );
-                self.stack.pop();
                 self.stack.push(Value::closure(vals, cl.fun_args, cl.fun));
-            } else if cur_args > cl.fun_args {
-                // multiple applies
             } else {
                 match cl.fun {
-                    Function::Add => self.apply2(&cl, builtin::add),
-                    Function::Subtract => self.apply2(&cl, builtin::subtract),
-                    Function::Multiply => self.apply2(&cl, builtin::multiply),
-                    Function::Divide => self.apply2(&cl, builtin::divide),
+                    Function::Add => self.apply2(cl, builtin::add),
+                    Function::Subtract => self.apply2(cl, builtin::subtract),
+                    Function::Multiply => self.apply2(cl, builtin::multiply),
+                    Function::Divide => self.apply2(cl, builtin::divide),
                     Function::Defined(ip) => {
+                        let extra_args = cur_args - cl.fun_args;
+                        let stack_ptr = self.stack.len() - (ap_args - extra_args) as usize;
                         self.call_frames.push(CallFrame {
                             stack_ptr,
                             return_ptr: self.ip,
-                            closed_args: cl.closed_vals.len() as u8,
+                            extra_args,
+                            closure: Some(cl),
                         });
                         self.ip = ip;
                     }
@@ -335,26 +355,31 @@ mod vm {
             }
         }
 
+        fn return_op(&mut self) {
+            let frame = self.call_frames.pop().unwrap();
+            let result = self.stack.pop().unwrap();
+            self.stack.truncate(frame.stack_ptr);
+            self.stack.push(result);
+            self.ip = frame.return_ptr;
+            if frame.extra_args > 0 {
+                self.apply(frame.extra_args)
+            }
+        }
+
         pub fn exec(&mut self) -> Value {
-            while self.ip < self.code.code.len() {
-                let op = self.code.code[self.ip];
+            while let Some(op) = self.code.code.get(self.ip) {
                 self.ip += 1;
-                match op {
+                match *op {
                     Op::Const(i) => self.const_op(i),
                     Op::Function(a, f) => self.stack.push(Value::closure(Vec::new(), a, f)),
                     Op::Apply(ap_args) => self.apply(ap_args),
-                    Op::Return => {
-                        let frame = self.call_frames.pop().unwrap();
-                        let result = self.stack.pop().unwrap();
-                        self.stack.truncate(frame.stack_ptr - 1);
-                        self.stack.push(result);
-                        self.ip = frame.return_ptr;
-                    }
+                    Op::Return => self.return_op(),
                     Op::GetVar(depth, slot) => self.get_var(depth, slot),
                     Op::BeginFrame => self.call_frames.push(CallFrame {
                         stack_ptr: self.stack.len(),
                         return_ptr: 0,
-                        closed_args: 0,
+                        extra_args: 0,
+                        closure: None,
                     }),
                     Op::EndFrame => {
                         let result = self.stack.pop().unwrap();
@@ -429,7 +454,7 @@ mod compiler {
                 },
                 AST::Expr(x) => {
                     let args = x.len() - 1;
-                    for a in x.into_iter() {
+                    for a in x.into_iter().rev() {
                         self.compile_part(a);
                     }
                     self.code.add_op(Op::Apply(args as u8));
@@ -467,7 +492,7 @@ mod compiler {
                     args: fun.args.len() as u8,
                     entry,
                 });
-                for (slot, name) in fun.args.into_iter().enumerate() {
+                for (slot, name) in fun.args.into_iter().rev().enumerate() {
                     self.vars.push(Var {
                         name,
                         slot,
