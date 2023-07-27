@@ -36,6 +36,13 @@ impl Compiler {
                 "-" => self.code.add_op(Op::Function(2, Function::Subtract)),
                 "*" => self.code.add_op(Op::Function(2, Function::Multiply)),
                 "/" => self.code.add_op(Op::Function(2, Function::Divide)),
+                "==" => self.code.add_op(Op::Function(2, Function::EQ)),
+                "!=" => self.code.add_op(Op::Function(2, Function::NEQ)),
+                ">" => self.code.add_op(Op::Function(2, Function::GT)),
+                ">=" => self.code.add_op(Op::Function(2, Function::GTE)),
+                "<" => self.code.add_op(Op::Function(2, Function::LT)),
+                "<=" => self.code.add_op(Op::Function(2, Function::LTE)),
+                "bool" => self.code.add_op(Op::Function(1, Function::Not)),
                 _ => {
                     let mut found = false;
                     for var in self.vars.iter().rev() {

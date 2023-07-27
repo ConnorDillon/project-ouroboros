@@ -19,12 +19,19 @@ pub struct FunctionDef {
     pub args: u8,
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Copy, Clone)]
 pub enum Function {
     Add,
     Subtract,
     Multiply,
     Divide,
+    EQ,
+    NEQ,
+    GT,
+    GTE,
+    LT,
+    LTE,
+    Not,
     Defined(usize),
 }
 
@@ -56,14 +63,14 @@ impl ByteCode {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct Closure {
     closed_vals: Rc<Vec<Value>>,
     fun_args: u8,
     fun: Function,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum Value {
     Nil,
     Bool(bool),
@@ -165,6 +172,12 @@ impl VM {
         self.stack.push(var);
     }
 
+    fn apply1(&mut self, closure: Closure, f: fn(Value) -> Value) {
+        let mut popper = Popper::new(&closure, &mut self.stack);
+        let x = popper.pop();
+        self.stack.push(f(x));
+    }
+
     fn apply2(&mut self, closure: Closure, f: fn(Value, Value) -> Value) {
         let mut popper = Popper::new(&closure, &mut self.stack);
         let x = popper.pop();
@@ -190,6 +203,13 @@ impl VM {
                 Function::Subtract => self.apply2(cl, builtin::subtract),
                 Function::Multiply => self.apply2(cl, builtin::multiply),
                 Function::Divide => self.apply2(cl, builtin::divide),
+                Function::EQ => self.apply2(cl, builtin::eq),
+                Function::NEQ => self.apply2(cl, builtin::neq),
+                Function::GT => self.apply2(cl, builtin::gt),
+                Function::GTE => self.apply2(cl, builtin::gte),
+                Function::LT => self.apply2(cl, builtin::lt),
+                Function::LTE => self.apply2(cl, builtin::lte),
+                Function::Not => self.apply1(cl, builtin::not),
                 Function::Defined(ip) => {
                     let extra_args = cur_args - cl.fun_args;
                     let stack_ptr = self.stack.len() - (ap_args - extra_args) as usize;
