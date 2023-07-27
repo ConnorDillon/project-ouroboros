@@ -3,7 +3,8 @@ use std::collections::hash_set::HashSet;
 
 pub fn symbols() -> HashSet<String> {
     vec![
-        "+", "*", "-", "/", "==", "!=", ">", ">=", "<", "<=", "!", "&", "|"
+        "+", "*", "-", "/", "==", "!=", ">", ">=", "<", "<=", "!", "&", "|", "if", "true", "false",
+        "nil",
     ]
     .into_iter()
     .map(String::from)

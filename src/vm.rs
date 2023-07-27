@@ -11,6 +11,10 @@ pub enum Op {
     Return,
     Apply(u8),
     Function(u8, Function),
+    Pop,
+    JumpIfTrue(usize),
+    JumpIfFalse(usize),
+    Jump(usize),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -100,12 +104,20 @@ impl Value {
             panic!("Expected closure but found: {:?}", self)
         }
     }
+
+    pub fn to_bool(&self) -> bool {
+        match &self {
+            Value::Nil => false,
+            Value::Bool(false) => false,
+            _ => true,
+        }
+    }
 }
 
 pub struct VM {
-    ip: usize,
-    code: ByteCode,
-    stack: Vec<Value>,
+    pub ip: usize,
+    pub code: ByteCode,
+    pub stack: Vec<Value>,
     call_frames: Vec<CallFrame>,
 }
 
@@ -257,6 +269,20 @@ impl VM {
                         .truncate(self.call_frames.pop().unwrap().stack_ptr);
                     self.stack.push(result);
                 }
+                Op::JumpIfTrue(i) => {
+                    if self.stack.last().unwrap().to_bool() {
+                        self.ip = i;
+                    }
+                }
+                Op::JumpIfFalse(i) => {
+                    if !self.stack.last().unwrap().to_bool() {
+                        self.ip = i;
+                    }
+                }
+                Op::Jump(i) => self.ip = i,
+                Op::Pop => {
+		    self.stack.pop();
+		}
             }
         }
         self.stack.pop().unwrap()

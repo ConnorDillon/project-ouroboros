@@ -42,7 +42,7 @@ impl Compiler {
                 ">=" => self.code.add_op(Op::Function(2, Function::GTE)),
                 "<" => self.code.add_op(Op::Function(2, Function::LT)),
                 "<=" => self.code.add_op(Op::Function(2, Function::LTE)),
-                "bool" => self.code.add_op(Op::Function(1, Function::Not)),
+                "!" => self.code.add_op(Op::Function(1, Function::Not)),
                 _ => {
                     let mut found = false;
                     for var in self.vars.iter().rev() {
@@ -58,13 +58,15 @@ impl Compiler {
                     }
                 }
             },
-            AST::Expr(x) => {
-                let args = x.len() - 1;
-                for a in x.into_iter().rev() {
-                    self.compile_part(a);
-                }
-                self.code.add_op(Op::Apply(args as u8));
-            }
+            AST::Expr(x) => match &x[0] {
+                AST::Symbol(s) => match s.as_str() {
+                    "if" => self.compile_if(x),
+                    "|" => self.compile_or(x),
+                    "&" => self.compile_and(x),
+                    _ => self.compile_appl(x),
+                },
+                _ => self.compile_appl(x),
+            },
             AST::Let(vars, expr) => {
                 self.depth = self.depth + 1;
                 self.code.add_op(Op::BeginFrame);
@@ -88,6 +90,60 @@ impl Compiler {
                     .add_op(Op::Function(f.args, Function::Defined(f.entry)))
             }
         }
+    }
+
+    fn compile_if(&mut self, mut expr: Vec<AST<usize>>) {
+	if expr.len() != 4 {
+	    panic!("Bad if expression: {:?}", expr);
+	}
+	let else_expr = expr.pop().unwrap();
+	let then_expr = expr.pop().unwrap();
+	let cond_expr = expr.pop().unwrap();
+	self.compile_part(cond_expr);
+	let jump_if_op = self.code.code.len();
+	self.code.add_op(Op::JumpIfFalse(0));
+	self.code.add_op(Op::Pop);
+	self.compile_part(then_expr);
+	let jump_op = self.code.code.len();
+	self.code.add_op(Op::Jump(0));
+	self.code.code[jump_if_op] = Op::JumpIfFalse(self.code.code.len());
+	self.code.add_op(Op::Pop);
+	self.compile_part(else_expr);
+	self.code.code[jump_op] = Op::Jump(self.code.code.len());
+    }
+
+    fn compile_or(&mut self, mut expr: Vec<AST<usize>>) {
+	if expr.len() != 3 {
+	    panic!("Bad or expression: {:?}", expr);
+	}
+	let expr2 = expr.pop().unwrap();
+	let expr1 = expr.pop().unwrap();
+	self.compile_part(expr1);
+	let jump_if_op = self.code.code.len();
+	self.code.add_op(Op::JumpIfTrue(0));
+	self.compile_part(expr2);
+	self.code.code[jump_if_op] = Op::JumpIfTrue(self.code.code.len());
+    }
+
+    fn compile_and(&mut self, mut expr: Vec<AST<usize>>) {
+	if expr.len() != 3 {
+	    panic!("Bad and expression: {:?}", expr);
+	}
+	let expr2 = expr.pop().unwrap();
+	let expr1 = expr.pop().unwrap();
+	self.compile_part(expr1);
+	let jump_if_op = self.code.code.len();
+	self.code.add_op(Op::JumpIfFalse(0));
+	self.compile_part(expr2);
+	self.code.code[jump_if_op] = Op::JumpIfFalse(self.code.code.len());
+    }
+
+    fn compile_appl(&mut self, expr: Vec<AST<usize>>) {
+        let args = expr.len() - 1;
+        for a in expr.into_iter().rev() {
+            self.compile_part(a);
+        }
+        self.code.add_op(Op::Apply(args as u8));
     }
 
     pub fn compile(mut self, ast: AST<Fun>) -> ByteCode {

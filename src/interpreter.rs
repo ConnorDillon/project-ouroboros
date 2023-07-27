@@ -3,7 +3,7 @@ use crate::parser::parse;
 use crate::vm::{Value, VM};
 
 pub struct Interpreter {
-    vm: VM,
+    pub vm: VM,
 }
 
 impl Interpreter {
@@ -89,5 +89,30 @@ mod tests {
             ip.interpret("((fn (x) (fn (y) (+ x y))) 1 2)"),
             Ok(Value::Int(3))
         );
+    }
+
+    #[test]
+    fn test_interpret_if() {
+        let mut ip = Interpreter::new();
+        assert_eq!(ip.interpret("(if true 1 2)"), Ok(Value::Int(1)));
+        assert_eq!(ip.interpret("(if 0 1 2)"), Ok(Value::Int(1)));
+        assert_eq!(ip.interpret("(if false 1 2)"), Ok(Value::Int(2)));
+        assert_eq!(ip.interpret("(if nil 1 2)"), Ok(Value::Int(2)));
+    }
+
+    #[test]
+    fn test_interpret_bool() {
+        let mut ip = Interpreter::new();
+        assert_eq!(ip.interpret("(! true)"), Ok(Value::Bool(false)));
+        assert_eq!(ip.interpret("(! false)"), Ok(Value::Bool(true)));
+        assert_eq!(ip.interpret("(| true false)"), Ok(Value::Bool(true)));
+        assert_eq!(ip.interpret("(| false true)"), Ok(Value::Bool(true)));
+        assert_eq!(ip.interpret("(| true true)"), Ok(Value::Bool(true)));
+        assert_eq!(ip.interpret("(| false false)"), Ok(Value::Bool(false)));
+        assert_eq!(ip.interpret("(& true false)"), Ok(Value::Bool(false)));
+        assert_eq!(ip.interpret("(& false true)"), Ok(Value::Bool(false)));
+        assert_eq!(ip.interpret("(& true true)"), Ok(Value::Bool(true)));
+        assert_eq!(ip.interpret("(& false false)"), Ok(Value::Bool(false)));
+        assert_eq!(ip.interpret("(& (! false) (| false true))"), Ok(Value::Bool(true)));
     }
 }

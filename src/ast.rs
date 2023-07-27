@@ -23,7 +23,9 @@ impl AST<Fun> {
         match self {
             AST::Symbol(s) => {
                 let mut hs = HashSet::with_capacity(1);
-                hs.insert(s.clone());
+                if !symbols().contains(s) {
+                    hs.insert(s.clone());
+                }
                 hs
             }
             AST::Fn(f) => f.free_vars(),
@@ -46,7 +48,7 @@ pub struct Fun {
 
 impl Fun {
     fn free_vars(&self) -> HashSet<String> {
-        let bound = self.args.iter().chain(symbols().iter()).cloned().collect();
+        let bound = self.args.iter().cloned().collect();
         self.body.free_vars().difference(&bound).cloned().collect()
     }
 }
@@ -100,5 +102,6 @@ mod tests {
     fn test_free_vars() {
         assert_eq!(parse("(fn (x) x))").unwrap().free_vars().len(), 0);
         assert_eq!(parse("(fn (x) (+ x y))").unwrap().free_vars().len(), 1);
+        assert_eq!(parse("(if true false nil)").unwrap().free_vars().len(), 0);
     }
 }
