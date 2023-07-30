@@ -113,6 +113,9 @@ mod tests {
         assert_eq!(ip.interpret("(& false true)"), Ok(Value::Bool(false)));
         assert_eq!(ip.interpret("(& true true)"), Ok(Value::Bool(true)));
         assert_eq!(ip.interpret("(& false false)"), Ok(Value::Bool(false)));
-        assert_eq!(ip.interpret("(& (! false) (| false true))"), Ok(Value::Bool(true)));
+        assert_eq!(
+            ip.interpret("(& (! false) (| false true))"),
+            Ok(Value::Bool(true))
+        );
     }
 }

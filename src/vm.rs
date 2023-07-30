@@ -1,71 +1,7 @@
 use std::rc::Rc;
 
 use crate::builtin;
-
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub enum Op {
-    Const(usize),
-    BeginFrame,
-    EndFrame,
-    GetVar(usize, usize),
-    Return,
-    Apply(u8),
-    Function(u8, Function),
-    Pop,
-    JumpIfTrue(usize),
-    JumpIfFalse(usize),
-    Jump(usize),
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct FunctionDef {
-    pub entry: usize,
-    pub args: u8,
-}
-
-#[derive(Debug, PartialOrd, PartialEq, Copy, Clone)]
-pub enum Function {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    EQ,
-    NEQ,
-    GT,
-    GTE,
-    LT,
-    LTE,
-    Not,
-    Defined(usize),
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct ByteCode {
-    pub consts: Vec<Value>,
-    pub funs: Vec<FunctionDef>,
-    pub code: Vec<Op>,
-    pub entry: usize,
-}
-
-impl ByteCode {
-    pub fn new() -> ByteCode {
-        ByteCode {
-            consts: Vec::new(),
-            funs: Vec::new(),
-            code: Vec::new(),
-            entry: 0,
-        }
-    }
-
-    pub fn add_op(&mut self, op: Op) {
-        self.code.push(op);
-    }
-
-    pub fn add_const(&mut self, val: Value) {
-        self.code.push(Op::Const(self.consts.len()));
-        self.consts.push(val)
-    }
-}
+use crate::bytecode::{ByteCode, Function, Op};
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct Closure {
@@ -116,7 +52,7 @@ impl Value {
 
 pub struct VM {
     pub ip: usize,
-    pub code: ByteCode,
+    pub code: ByteCode<Value>,
     pub stack: Vec<Value>,
     call_frames: Vec<CallFrame>,
 }
@@ -163,7 +99,7 @@ impl VM {
         }
     }
 
-    pub fn load(&mut self, code: ByteCode) {
+    pub fn load(&mut self, code: ByteCode<Value>) {
         self.ip = code.entry;
         self.code = code;
         self.stack = Vec::new();
@@ -249,7 +185,7 @@ impl VM {
     }
 
     pub fn exec(&mut self) -> Value {
-        while let Some(op) = self.code.code.get(self.ip) {
+        while let Some(op) = self.code.ops.get(self.ip) {
             self.ip += 1;
             match *op {
                 Op::Const(i) => self.const_op(i),
@@ -271,18 +207,18 @@ impl VM {
                 }
                 Op::JumpIfTrue(i) => {
                     if self.stack.last().unwrap().to_bool() {
-                        self.ip = i;
+                        self.ip += i;
                     }
                 }
                 Op::JumpIfFalse(i) => {
                     if !self.stack.last().unwrap().to_bool() {
-                        self.ip = i;
+                        self.ip += i;
                     }
                 }
-                Op::Jump(i) => self.ip = i,
+                Op::Jump(i) => self.ip += i,
                 Op::Pop => {
-		    self.stack.pop();
-		}
+                    self.stack.pop();
+                }
             }
         }
         self.stack.pop().unwrap()

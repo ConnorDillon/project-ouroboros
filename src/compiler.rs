@@ -1,5 +1,6 @@
 use crate::ast::{Fun, AST};
-use crate::vm::{ByteCode, Function, FunctionDef, Op, Value};
+use crate::bytecode::{ByteCode, Function, FunctionMeta, Op};
+use crate::vm::Value;
 
 #[derive(Debug, PartialEq, Clone)]
 struct Var {
@@ -9,7 +10,7 @@ struct Var {
 }
 
 pub struct Compiler {
-    code: ByteCode,
+    code: ByteCode<Value>,
     vars: Vec<Var>,
     depth: usize,
 }
@@ -77,7 +78,7 @@ impl Compiler {
                         slot,
                         depth: self.depth,
                     });
-                    self.compile_part(vexpr)
+                    self.compile_part(vexpr);
                 }
                 self.compile_part(*expr);
                 self.vars.truncate(var_count);
@@ -93,49 +94,49 @@ impl Compiler {
     }
 
     fn compile_if(&mut self, mut expr: Vec<AST<usize>>) {
-	if expr.len() != 4 {
-	    panic!("Bad if expression: {:?}", expr);
-	}
-	let else_expr = expr.pop().unwrap();
-	let then_expr = expr.pop().unwrap();
-	let cond_expr = expr.pop().unwrap();
-	self.compile_part(cond_expr);
-	let jump_if_op = self.code.code.len();
-	self.code.add_op(Op::JumpIfFalse(0));
-	self.code.add_op(Op::Pop);
-	self.compile_part(then_expr);
-	let jump_op = self.code.code.len();
-	self.code.add_op(Op::Jump(0));
-	self.code.code[jump_if_op] = Op::JumpIfFalse(self.code.code.len());
-	self.code.add_op(Op::Pop);
-	self.compile_part(else_expr);
-	self.code.code[jump_op] = Op::Jump(self.code.code.len());
+        if expr.len() != 4 {
+            panic!("Bad if expression: {:?}", expr);
+        }
+        let else_expr = expr.pop().unwrap();
+        let then_expr = expr.pop().unwrap();
+        let cond_expr = expr.pop().unwrap();
+        self.compile_part(cond_expr);
+        let jump_if_op = self.code.len();
+        self.code.add_op(Op::JumpIfFalse(0));
+        self.code.add_op(Op::Pop);
+        self.compile_part(then_expr);
+        let jump_op = self.code.len();
+        self.code.add_op(Op::Jump(0));
+        self.code.ops[jump_if_op] = Op::JumpIfFalse(self.code.len() - jump_if_op);
+        self.code.add_op(Op::Pop);
+        self.compile_part(else_expr);
+        self.code.ops[jump_op] = Op::Jump(self.code.len() - jump_op);
     }
 
     fn compile_or(&mut self, mut expr: Vec<AST<usize>>) {
-	if expr.len() != 3 {
-	    panic!("Bad or expression: {:?}", expr);
-	}
-	let expr2 = expr.pop().unwrap();
-	let expr1 = expr.pop().unwrap();
-	self.compile_part(expr1);
-	let jump_if_op = self.code.code.len();
-	self.code.add_op(Op::JumpIfTrue(0));
-	self.compile_part(expr2);
-	self.code.code[jump_if_op] = Op::JumpIfTrue(self.code.code.len());
+        if expr.len() != 3 {
+            panic!("Bad or expression: {:?}", expr);
+        }
+        let expr2 = expr.pop().unwrap();
+        let expr1 = expr.pop().unwrap();
+        self.compile_part(expr1);
+        let jump_if_op = self.code.len();
+        self.code.add_op(Op::JumpIfTrue(0));
+        self.compile_part(expr2);
+        self.code.ops[jump_if_op] = Op::JumpIfTrue(self.code.len() - jump_if_op);
     }
 
     fn compile_and(&mut self, mut expr: Vec<AST<usize>>) {
-	if expr.len() != 3 {
-	    panic!("Bad and expression: {:?}", expr);
-	}
-	let expr2 = expr.pop().unwrap();
-	let expr1 = expr.pop().unwrap();
-	self.compile_part(expr1);
-	let jump_if_op = self.code.code.len();
-	self.code.add_op(Op::JumpIfFalse(0));
-	self.compile_part(expr2);
-	self.code.code[jump_if_op] = Op::JumpIfFalse(self.code.code.len());
+        if expr.len() != 3 {
+            panic!("Bad and expression: {:?}", expr);
+        }
+        let expr2 = expr.pop().unwrap();
+        let expr1 = expr.pop().unwrap();
+        self.compile_part(expr1);
+        let jump_if_op = self.code.len();
+        self.code.add_op(Op::JumpIfFalse(0));
+        self.compile_part(expr2);
+        self.code.ops[jump_if_op] = Op::JumpIfFalse(self.code.len() - jump_if_op);
     }
 
     fn compile_appl(&mut self, expr: Vec<AST<usize>>) {
@@ -146,11 +147,12 @@ impl Compiler {
         self.code.add_op(Op::Apply(args as u8));
     }
 
-    pub fn compile(mut self, ast: AST<Fun>) -> ByteCode {
+    pub fn compile(mut self, ast: AST<Fun>) -> ByteCode<Value> {
         let lifted_ast = ast.lift_lambdas();
         for fun in lifted_ast.funs {
-            let entry = self.code.code.len();
-            self.code.funs.push(FunctionDef {
+            let entry = self.code.len();
+            self.code.funs.push(FunctionMeta {
+                name: String::new(),
                 args: fun.args.len() as u8,
                 entry,
             });
@@ -165,7 +167,7 @@ impl Compiler {
             self.code.add_op(Op::Return);
             self.vars.truncate(0);
         }
-        let entry = self.code.code.len();
+        let entry = self.code.len();
         self.compile_part(lifted_ast.ast);
         self.code.entry = entry;
         self.code
