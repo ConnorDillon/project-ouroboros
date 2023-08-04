@@ -1,4 +1,4 @@
-use crate::ast::{Fun, AST};
+use crate::ast::{Fun, AST, Rec};
 use crate::bytecode::{ByteCode, Function, FunctionMeta, Op};
 use crate::vm::Value;
 
@@ -68,10 +68,15 @@ impl Compiler {
                 },
                 _ => self.compile_appl(x),
             },
-            AST::Let(vars, expr) => {
+            AST::Let(rec, vars, expr) => {
                 self.depth = self.depth + 1;
                 self.code.add_op(Op::BeginFrame);
                 let var_count = vars.len();
+		if rec == Rec::Rec {
+		    for _ in 0..var_count {
+			self.code.add_op(Op::EmptyVar);
+		    }
+		}
                 for (slot, (name, vexpr)) in vars.into_iter().enumerate() {
                     self.vars.push(Var {
                         name,
@@ -79,6 +84,9 @@ impl Compiler {
                         depth: self.depth,
                     });
                     self.compile_part(vexpr);
+		    if rec == Rec::Rec {
+			self.code.add_op(Op::InitVar(slot));
+		    }
                 }
                 self.compile_part(*expr);
                 self.vars.truncate(var_count);

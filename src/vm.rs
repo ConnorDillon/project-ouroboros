@@ -1,16 +1,30 @@
+use std::fmt;
 use std::rc::Rc;
 
 use crate::builtin;
 use crate::bytecode::{ByteCode, Function, Op};
+use crate::stack::{Item, Stack};
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Closure {
-    closed_vals: Rc<Vec<Value>>,
-    fun_args: u8,
-    fun: Function,
+    pub closed_vals: Rc<Vec<Item>>,
+    pub fun_args: u8,
+    pub fun: Function,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+impl fmt::Display for Closure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Closure(closed_vals={}, fun_args={}, fun={})",
+            self.closed_vals.len(),
+            self.fun_args,
+            self.fun
+        )
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Value {
     Nil,
     Bool(bool),
@@ -20,8 +34,21 @@ pub enum Value {
     Closure(Closure),
 }
 
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Nil => write!(f, "nil"),
+            Value::Bool(x) => write!(f, "{}", x),
+            Value::Int(x) => write!(f, "{}", x),
+            Value::Float(x) => write!(f, "{}", x),
+            Value::String(x) => write!(f, "{}", x),
+            Value::Closure(x) => write!(f, "{}", x),
+        }
+    }
+}
+
 impl Value {
-    pub fn closure(vals: Vec<Value>, fun_args: u8, fun: Function) -> Value {
+    pub fn closure(vals: Vec<Item>, fun_args: u8, fun: Function) -> Value {
         Value::Closure(Closure {
             closed_vals: Rc::new(vals),
             fun_args,
@@ -37,7 +64,7 @@ impl Value {
         if let Value::Closure(c) = self {
             c.clone()
         } else {
-            panic!("Expected closure but found: {:?}", self)
+            panic!("Expected closure but found: {}", self)
         }
     }
 
@@ -53,40 +80,7 @@ impl Value {
 pub struct VM {
     pub ip: usize,
     pub code: ByteCode<Value>,
-    pub stack: Vec<Value>,
-    call_frames: Vec<CallFrame>,
-}
-
-struct CallFrame {
-    stack_ptr: usize,
-    return_ptr: usize,
-    extra_args: u8,
-    closure: Option<Closure>,
-}
-
-struct Popper<'a> {
-    closure: &'a Closure,
-    stack: &'a mut Vec<Value>,
-    top: usize,
-}
-
-impl<'a> Popper<'a> {
-    fn new(closure: &'a Closure, stack: &'a mut Vec<Value>) -> Self {
-        Popper {
-            closure,
-            stack,
-            top: closure.closed_vals.len(),
-        }
-    }
-
-    fn pop(&mut self) -> Value {
-        if self.top > 0 {
-            self.top -= 1;
-            self.closure.closed_vals[self.top].clone()
-        } else {
-            self.stack.pop().unwrap()
-        }
-    }
+    pub stack: Stack,
 }
 
 impl VM {
@@ -94,57 +88,43 @@ impl VM {
         VM {
             ip: 0,
             code: ByteCode::new(),
-            stack: Vec::new(),
-            call_frames: Vec::new(),
+            stack: Stack::new(),
         }
     }
 
     pub fn load(&mut self, code: ByteCode<Value>) {
         self.ip = code.entry;
         self.code = code;
-        self.stack = Vec::new();
-    }
-
-    fn get_var(&mut self, depth: usize, slot: usize) {
-        let frame = &self.call_frames[self.call_frames.len() - 1 - depth];
-        let var = if let Some(closure) = &frame.closure {
-            let stack_args = closure.fun_args as usize - closure.closed_vals.len();
-            if slot >= stack_args {
-                closure.closed_vals[slot - stack_args].clone()
-            } else {
-                self.stack[frame.stack_ptr + slot].clone()
-            }
-        } else {
-            self.stack[frame.stack_ptr + slot].clone()
-        };
-        self.stack.push(var);
+        self.stack = Stack::new();
     }
 
     fn apply1(&mut self, closure: Closure, f: fn(Value) -> Value) {
-        let mut popper = Popper::new(&closure, &mut self.stack);
-        let x = popper.pop();
-        self.stack.push(f(x));
+        let mut cs = self.stack.closed_stack(closure);
+        let x = cs.pop_val();
+        self.stack.push_val(f(x));
     }
 
     fn apply2(&mut self, closure: Closure, f: fn(Value, Value) -> Value) {
-        let mut popper = Popper::new(&closure, &mut self.stack);
-        let x = popper.pop();
-        let y = popper.pop();
-        self.stack.push(f(x, y));
+        let mut cs = self.stack.closed_stack(closure);
+        let x = cs.pop_val();
+        let y = cs.pop_val();
+        self.stack.push_val(f(x, y));
     }
 
     fn apply(&mut self, ap_args: u8) {
-        let cl = self.stack.pop().unwrap().to_closure();
+        let cl = self.stack.pop_val().to_closure();
         let cur_args = cl.closed_vals.len() as u8 + ap_args;
         if cur_args < cl.fun_args {
             let stack_ptr = self.stack.len() - (ap_args as usize);
             let mut vals = Vec::with_capacity(cur_args as usize);
             vals.extend(
                 self.stack
+                    .items
                     .drain(stack_ptr..)
                     .chain(cl.closed_vals.iter().cloned()),
             );
-            self.stack.push(Value::closure(vals, cl.fun_args, cl.fun));
+            self.stack
+                .push_val(Value::closure(vals, cl.fun_args, cl.fun));
         } else {
             match cl.fun {
                 Function::Add => self.apply2(cl, builtin::add),
@@ -161,12 +141,7 @@ impl VM {
                 Function::Defined(ip) => {
                     let extra_args = cur_args - cl.fun_args;
                     let stack_ptr = self.stack.len() - (ap_args - extra_args) as usize;
-                    self.call_frames.push(CallFrame {
-                        stack_ptr,
-                        return_ptr: self.ip,
-                        extra_args,
-                        closure: Some(cl),
-                    });
+                    self.stack.push_frame(stack_ptr, self.ip, extra_args, cl);
                     self.ip = ip;
                 }
             }
@@ -174,10 +149,7 @@ impl VM {
     }
 
     fn return_op(&mut self) {
-        let frame = self.call_frames.pop().unwrap();
-        let result = self.stack.pop().unwrap();
-        self.stack.truncate(frame.stack_ptr);
-        self.stack.push(result);
+        let frame = self.stack.pop_frame();
         self.ip = frame.return_ptr;
         if frame.extra_args > 0 {
             self.apply(frame.extra_args)
@@ -186,45 +158,47 @@ impl VM {
 
     pub fn exec(&mut self) -> Value {
         while let Some(op) = self.code.ops.get(self.ip) {
+            if cfg!(debug_assertions) {
+                print!("{:0>8} {:25} STACK TOP: ", self.ip, op.to_string());
+                if let Some(top) = self.stack.items.last() {
+                    println!("{}", top);
+                } else {
+                    println!("<none>");
+                }
+            }
             self.ip += 1;
             match *op {
                 Op::Const(i) => self.const_op(i),
-                Op::Function(a, f) => self.stack.push(Value::closure(Vec::new(), a, f)),
+                Op::Function(a, f) => self.stack.push_val(Value::closure(Vec::new(), a, f)),
                 Op::Apply(ap_args) => self.apply(ap_args),
                 Op::Return => self.return_op(),
-                Op::GetVar(depth, slot) => self.get_var(depth, slot),
-                Op::BeginFrame => self.call_frames.push(CallFrame {
-                    stack_ptr: self.stack.len(),
-                    return_ptr: 0,
-                    extra_args: 0,
-                    closure: None,
-                }),
+                Op::GetVar(depth, slot) => self.stack.get_push(depth, slot),
+                Op::BeginFrame => self.stack.begin_frame(),
                 Op::EndFrame => {
-                    let result = self.stack.pop().unwrap();
-                    self.stack
-                        .truncate(self.call_frames.pop().unwrap().stack_ptr);
-                    self.stack.push(result);
+                    self.stack.pop_frame();
                 }
                 Op::JumpIfTrue(i) => {
-                    if self.stack.last().unwrap().to_bool() {
-                        self.ip += i;
+                    if self.stack.top_val().to_bool() {
+                        self.ip += i - 1;
                     }
                 }
                 Op::JumpIfFalse(i) => {
-                    if !self.stack.last().unwrap().to_bool() {
-                        self.ip += i;
+                    if !self.stack.top_val().to_bool() {
+                        self.ip += i - 1;
                     }
                 }
-                Op::Jump(i) => self.ip += i,
+                Op::Jump(i) => self.ip += i - 1,
                 Op::Pop => {
-                    self.stack.pop();
+                    self.stack.pop_item();
                 }
+                Op::EmptyVar => self.stack.push_empty_var(),
+                Op::InitVar(slot) => self.stack.init_var(slot),
             }
         }
-        self.stack.pop().unwrap()
+        self.stack.pop_val()
     }
 
     fn const_op(&mut self, idx: usize) {
-        self.stack.push(self.code.consts[idx].clone())
+        self.stack.push_val(self.code.consts[idx].clone())
     }
 }

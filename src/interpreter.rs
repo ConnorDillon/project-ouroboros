@@ -118,4 +118,11 @@ mod tests {
             Ok(Value::Bool(true))
         );
     }
+
+    #[test]
+    fn test_interpret_letrec() {
+        let mut ip = Interpreter::new();
+        let expr = "(letrec ((f (fn (x) (if (< x 10) (f (+ x 1)) x)))) (f 0))";
+        assert_eq!(ip.interpret(expr), Ok(Value::Int(10)));
+    }
 }

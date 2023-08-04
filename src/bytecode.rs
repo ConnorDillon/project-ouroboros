@@ -13,6 +13,8 @@ pub enum Op {
     JumpIfTrue(usize),
     JumpIfFalse(usize),
     Jump(usize),
+    EmptyVar,
+    InitVar(usize),
 }
 
 impl fmt::Display for Op {
@@ -29,6 +31,8 @@ impl fmt::Display for Op {
             Op::JumpIfTrue(x) => write!(f, "JUMP IF TRUE: {}", x),
             Op::JumpIfFalse(x) => write!(f, "JUMP IF FALSE: {}", x),
             Op::Jump(x) => write!(f, "JUMP: {}", x),
+            Op::EmptyVar => write!(f, "EMPTY VAR"),
+            Op::InitVar(x) => write!(f, "INIT VAR: {}", x),
         }
     }
 }
@@ -42,13 +46,13 @@ pub struct FunctionMeta {
 
 impl fmt::Display for FunctionMeta {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "FUNCTION: name=")?;
+        write!(f, "Function(name=")?;
         if self.name.len() == 0 {
             write!(f, "<anonymous>")?;
         } else {
             write!(f, "{}", self.name)?;
         }
-        write!(f, " args={} entry={}", self.args, self.entry)
+        write!(f, ", args={}, entry={})", self.args, self.entry)
     }
 }
 
@@ -106,25 +110,25 @@ impl<T: fmt::Debug> fmt::Display for ByteCode<T> {
         writeln!(f, "OPERATIONS: {}", self.ops.len())?;
         writeln!(f, "")?;
         writeln!(f, "### FUNCTIONS ###")?;
-	if self.funs.len() == 0 {
+        if self.funs.len() == 0 {
             writeln!(f, "<NONE>")?;
-	}
+        }
         for (idx, fun) in self.funs.iter().enumerate() {
             writeln!(f, "{:0>8} {}", idx, fun)?;
         }
         writeln!(f, "")?;
         writeln!(f, "### CONSTANTS ###")?;
-	if self.consts.len() == 0 {
+        if self.consts.len() == 0 {
             writeln!(f, "<NONE>")?;
-	}
+        }
         for (idx, con) in self.consts.iter().enumerate() {
             writeln!(f, "{:0>8} {:?}", idx, con)?;
         }
         writeln!(f, "")?;
         writeln!(f, "### OPERATIONS ###")?;
-	if self.ops.len() == 0 {
+        if self.ops.len() == 0 {
             writeln!(f, "<NONE>")?;
-	}
+        }
         for (idx, op) in self.ops.iter().enumerate() {
             if idx == self.entry {
                 writeln!(f, "## MAIN ##")?;

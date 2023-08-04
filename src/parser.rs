@@ -1,5 +1,5 @@
 use crate::ast;
-type AST = ast::AST<ast::Fun>;
+use crate::ast::Rec;
 use nom::{
     branch::alt,
     bytes::complete::tag,
@@ -12,6 +12,8 @@ use nom::{
     sequence::{delimited, preceded, terminated},
     Finish, IResult, Parser,
 };
+
+type AST = ast::AST<ast::Fun>;
 
 fn lexeme<'a, O, E: ParseError<&'a str>, F>(
     parser: F,
@@ -76,9 +78,9 @@ fn parse_expr() -> impl Fn(&str) -> IResult<&str, AST> {
 
 fn parse_let() -> impl Fn(&str) -> IResult<&str, AST> {
     |i| {
-        let (r, (_, _, x, y, _)) = tuple((
+        let (r, (_, l, x, y, _)) = tuple((
             lexeme(char('(')),
-            lexeme(tag("let")),
+            alt((lexeme(tag("letrec")), lexeme(tag("let")))),
             delimited(
                 lexeme(char('(')),
                 many1(delimited(
@@ -91,7 +93,14 @@ fn parse_let() -> impl Fn(&str) -> IResult<&str, AST> {
             parse_ast(),
             lexeme(char(')')),
         ))(i)?;
-        Ok((r, AST::Let(x, Box::new(y))))
+        Ok((
+            r,
+            AST::Let(
+                if l == "letrec" { Rec::Rec } else { Rec::NonRec },
+                x,
+                Box::new(y),
+            ),
+        ))
     }
 }
 
@@ -141,7 +150,7 @@ pub fn parse(i: &str) -> Result<AST, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ast, parse, AST};
+    use super::{ast, parse, Rec, AST};
 
     #[test]
     fn test_parse_int() {
@@ -201,10 +210,23 @@ mod tests {
         assert_eq!(
             parse("(let ((x 1) (y 2)) x)"),
             Ok(AST::Let(
+                Rec::NonRec,
                 vec![
                     (String::from("x"), AST::Int(1)),
                     (String::from("y"), AST::Int(2))
                 ],
+                Box::new(AST::Symbol("x".into()))
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_letrec() {
+        assert_eq!(
+            parse("(letrec ((x 1)) x)"),
+            Ok(AST::Let(
+                Rec::Rec,
+                vec![(String::from("x"), AST::Int(1))],
                 Box::new(AST::Symbol("x".into()))
             ))
         );

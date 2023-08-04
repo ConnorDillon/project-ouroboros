@@ -2,13 +2,19 @@ use crate::builtin::symbols;
 use std::collections::hash_set::HashSet;
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum Rec {
+    Rec,
+    NonRec,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum AST<T> {
     Int(i64),
     Float(f64),
     String(String),
     Symbol(String),
     Expr(Vec<AST<T>>),
-    Let(Vec<(String, AST<T>)>, Box<AST<T>>),
+    Let(Rec, Vec<(String, AST<T>)>, Box<AST<T>>),
     Fn(T),
 }
 
@@ -29,7 +35,7 @@ impl AST<Fun> {
                 hs
             }
             AST::Fn(f) => f.free_vars(),
-            AST::Let(bs, e) => {
+            AST::Let(_, bs, e) => {
                 let fvs: HashSet<String> =
                     bs.iter().map(|(_, e)| e.free_vars()).flatten().collect();
                 fvs.union(&e.free_vars()).cloned().collect()
@@ -83,7 +89,8 @@ fn lift(funs: &mut Vec<LiftedFun>, ast: AST<Fun>) -> AST<usize> {
             }
         }
         AST::Expr(x) => AST::Expr(x.into_iter().map(|x| lift(funs, x)).collect()),
-        AST::Let(vars, expr) => AST::Let(
+        AST::Let(rec, vars, expr) => AST::Let(
+	    rec,
             vars.into_iter().map(|(x, y)| (x, lift(funs, y))).collect(),
             Box::new(lift(funs, *expr)),
         ),
