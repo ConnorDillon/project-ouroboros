@@ -11,16 +11,13 @@ pub enum Item {
 
 impl fmt::Display for Item {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-	match self {
-	    Item::Value(x) => write!(f, "{}", x),
-	    Item::InitVar(x) => {
-		match x.get() {
-		    Some(x) => write!(f, "InitVar({})", x),
-		    None => write!(f, "InitVar(Empty)"),
-		}
-	    }
-	}
-        
+        match self {
+            Item::Value(x) => write!(f, "{}", x),
+            Item::InitVar(x) => match x.get() {
+                Some(x) => write!(f, "InitVar({})", x),
+                None => write!(f, "InitVar(Empty)"),
+            },
+        }
     }
 }
 
@@ -41,9 +38,7 @@ impl Item {
 
     pub fn set(&self, val: Value) {
         match self {
-            Item::InitVar(x) => x
-                .set(val)
-                .expect(&format!("InitVar already set: {}", self)),
+            Item::InitVar(x) => x.set(val).expect(&format!("InitVar already set: {}", self)),
             _ => panic!("Expected InitVar but found: {}", self),
         }
     }
@@ -55,6 +50,21 @@ pub struct CallFrame {
     pub return_ptr: usize,
     pub extra_args: u8,
     pub closure: Option<Closure>,
+}
+
+impl fmt::Display for CallFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Frame(sp={}, rp={}, extra={}, closure=",
+            self.stack_ptr, self.return_ptr, self.extra_args,
+        )?;
+        if let Some(c) = &self.closure {
+            write!(f, "{})", c)
+        } else {
+            write!(f, "<none>)")
+	}
+    }
 }
 
 #[derive(Debug)]
@@ -174,15 +184,23 @@ impl Stack {
         frame
     }
 
-    // pub fn reuse_frame(&mut self, ap_args: usize, closure: Closure) {
-    //     let frame = self.frames.last_mut().expect("Unbalanced stack error");
-    //     frame.closure = Some(closure);
-    //     let stack_ptr = frame.stack_ptr;
-    //     for slot in (0..ap_args).rev() {
-    //         self.items[stack_ptr + slot] = self.pop_item();
-    //     }
-    //     self.items.truncate(stack_ptr + ap_args);
-    // }
+    pub fn reuse_frame(&mut self, depth: usize, ap_args: usize, extra_args: u8, closure: Closure) {
+        let frame_idx = self.frames.len() - depth;
+        let frame = self
+            .frames
+            .get_mut(frame_idx - 1)
+            .expect("Unbalanced stack error");
+        frame.extra_args = extra_args;
+        frame.closure = Some(closure);
+        let stack_ptr = frame.stack_ptr;
+        for slot in (0..ap_args).rev() {
+            self.items[stack_ptr + slot] = self.pop_item();
+        }
+        self.items.truncate(stack_ptr + ap_args);
+        if depth > 0 {
+            self.frames.truncate(frame_idx);
+        }
+    }
 
     pub fn closed_stack(&mut self, closure: Closure) -> ClosedStack {
         let closed_vals = closure.closed_vals.len();

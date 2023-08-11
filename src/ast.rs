@@ -21,7 +21,7 @@ pub enum AST<T> {
 impl AST<Fun> {
     pub fn lift_lambdas(self) -> LiftedAST {
         let mut funs = Vec::new();
-        let ast = lift(&mut funs, self);
+        let ast = lift(&mut funs, String::new(), self);
         LiftedAST { funs, ast }
     }
 
@@ -81,18 +81,19 @@ pub struct LiftedAST {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct LiftedFun {
+    pub name: String,
     pub args: Vec<String>,
     pub body: AST<usize>,
 }
 
-fn lift(funs: &mut Vec<LiftedFun>, ast: AST<Fun>) -> AST<usize> {
+fn lift(funs: &mut Vec<LiftedFun>, name: String, ast: AST<Fun>) -> AST<usize> {
     match ast {
         AST::Fn(f) => {
             let free_vars = f.free_vars();
             let mut args = Vec::with_capacity(free_vars.len() + f.args.len());
             args.extend(free_vars.iter().cloned().chain(f.args.into_iter()));
-            let body = lift(funs, *f.body);
-            let lf = LiftedFun { args, body };
+            let body = lift(funs, String::new(), *f.body);
+            let lf = LiftedFun { name, args, body };
             let idx = funs.len();
             funs.push(lf);
             let fun = AST::Fn(idx);
@@ -104,11 +105,11 @@ fn lift(funs: &mut Vec<LiftedFun>, ast: AST<Fun>) -> AST<usize> {
                 fun
             }
         }
-        AST::Expr(x) => AST::Expr(x.into_iter().map(|x| lift(funs, x)).collect()),
+        AST::Expr(x) => AST::Expr(x.into_iter().map(|x| lift(funs, String::new(), x)).collect()),
         AST::Let(rec, vars, expr) => AST::Let(
             rec,
-            vars.into_iter().map(|(x, y)| (x, lift(funs, y))).collect(),
-            Box::new(lift(funs, *expr)),
+            vars.into_iter().map(|(x, y)| (x.clone(), lift(funs, x, y))).collect(),
+            Box::new(lift(funs, String::new(), *expr)),
         ),
         AST::Int(x) => AST::Int(x),
         AST::Float(x) => AST::Float(x),
@@ -140,6 +141,7 @@ mod tests {
         let ast = parse("(fn (x) (let ((y 1)) y))").unwrap().lift_lambdas();
         let lifted = LiftedAST {
             funs: vec![LiftedFun {
+                name: String::new(),
                 args: vec!["x".into()],
                 body: AST::Let(
                     Rec::NonRec,

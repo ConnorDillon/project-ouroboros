@@ -92,6 +92,15 @@ mod tests {
     }
 
     #[test]
+    fn test_interpret_fn_let() {
+        let mut ip = Interpreter::new();
+        assert_eq!(
+            ip.interpret("((fn (x) (let ((y 1)) (+ x y))) 2)"),
+            Ok(Value::Int(3))
+        );
+    }
+
+    #[test]
     fn test_interpret_if() {
         let mut ip = Interpreter::new();
         assert_eq!(ip.interpret("(if true 1 2)"), Ok(Value::Int(1)));
@@ -123,6 +132,20 @@ mod tests {
     fn test_interpret_letrec() {
         let mut ip = Interpreter::new();
         let expr = "(letrec ((f (fn (x) (if (< x 10) (f (+ x 1)) x)))) (f 0))";
+        assert_eq!(ip.interpret(expr), Ok(Value::Int(10)));
+    }
+
+    #[test]
+    fn test_interpret_tail_apply() {
+        let mut ip = Interpreter::new();
+        let expr = "
+          (letrec ((f (fn (x) (if (cond x) (g (succ x)) x)))
+                   (g (fn (x) (if (cond x) (f (succ x)) x)))
+                   (plus (fn (x) (+ x 1)))
+                   (succ (fn (x) (let ((y x)) (plus y))))
+                   (cond (fn (x) (& (>= x 0) (< (succ x) 11)))))
+            (f 0))
+        ";
         assert_eq!(ip.interpret(expr), Ok(Value::Int(10)));
     }
 }

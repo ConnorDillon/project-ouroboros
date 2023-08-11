@@ -221,6 +221,21 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_fn_let() {
+        assert_eq!(
+            parse("(fn (x) (let ((y 1)) y))"),
+            Ok(AST::Fn(ast::Fun {
+                args: vec![String::from("x")],
+                body: Box::new(AST::Let(
+                    Rec::NonRec,
+                    vec![(String::from("y"), AST::Int(1))],
+                    Box::new(AST::Symbol("y".into()))
+                ))
+            }))
+        );
+    }
+
+    #[test]
     fn test_parse_letrec() {
         assert_eq!(
             parse("(letrec ((x 1)) x)"),

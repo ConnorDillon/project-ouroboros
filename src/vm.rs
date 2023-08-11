@@ -111,7 +111,7 @@ impl VM {
         self.stack.push_val(f(x, y));
     }
 
-    fn apply(&mut self, ap_args: u8) {
+    fn apply(&mut self, tail: Option<usize>, ap_args: u8) {
         let cl = self.stack.pop_val().to_closure();
         let cur_args = cl.closed_vals.len() as u8 + ap_args;
         if cur_args < cl.fun_args {
@@ -140,8 +140,16 @@ impl VM {
                 Function::Not => self.apply1(cl, builtin::not),
                 Function::Defined(ip) => {
                     let extra_args = cur_args - cl.fun_args;
-                    let stack_ptr = self.stack.len() - (ap_args - extra_args) as usize;
-                    self.stack.push_frame(stack_ptr, self.ip, extra_args, cl);
+                    match tail {
+                        Some(depth) => {
+                            self.stack
+                                .reuse_frame(depth, ap_args as usize, extra_args, cl)
+                        }
+                        None => {
+                            let stack_ptr = self.stack.len() - (ap_args - extra_args) as usize;
+                            self.stack.push_frame(stack_ptr, self.ip, extra_args, cl);
+                        }
+                    }
                     self.ip = ip;
                 }
             }
@@ -152,15 +160,21 @@ impl VM {
         let frame = self.stack.pop_frame();
         self.ip = frame.return_ptr;
         if frame.extra_args > 0 {
-            self.apply(frame.extra_args)
+            self.apply(None, frame.extra_args)
         }
     }
 
     pub fn exec(&mut self) -> Value {
         while let Some(op) = self.code.ops.get(self.ip) {
             if cfg!(debug_assertions) {
-                print!("{:0>8} {:25} STACK TOP: ", self.ip, op.to_string());
+                print!("{:0>8} {:25} STACK TOP:", self.ip, op.to_string());
                 if let Some(top) = self.stack.items.last() {
+                    print!(" {:60}", top.to_string());
+                } else {
+                    print!(" {:60}", String::from("<none>"));
+                }
+                print!(" TOP FRAME {}: ", self.stack.frames.len());
+                if let Some(top) = self.stack.frames.last() {
                     println!("{}", top);
                 } else {
                     println!("<none>");
@@ -170,7 +184,8 @@ impl VM {
             match *op {
                 Op::Const(i) => self.const_op(i),
                 Op::Function(a, f) => self.stack.push_val(Value::closure(Vec::new(), a, f)),
-                Op::Apply(ap_args) => self.apply(ap_args),
+                Op::Apply(ap_args) => self.apply(None, ap_args),
+                Op::TailApply(depth, ap_args) => self.apply(Some(depth), ap_args),
                 Op::Return => self.return_op(),
                 Op::GetVar(depth, slot) => self.stack.get_push(depth, slot),
                 Op::BeginFrame => self.stack.begin_frame(),

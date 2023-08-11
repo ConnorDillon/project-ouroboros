@@ -14,9 +14,15 @@ use vm::Value;
 
 fn main() {
     let mut ip = Interpreter::new();
-    println!("{:?}", ip.interpret("(if true 1 2)").unwrap());
-    println!("{:?}", ip.vm.stack);
-    let expr = "(letrec ((f (fn (x) (if (> x 9) x (f (+ x 1)))))) (f 0))";
+    ip.interpret("1").unwrap();
+    let expr = "
+      (letrec ((f (fn (x) (if (cond x) (g (succ x)) x)))
+               (g (fn (x) (if (cond x) (f (succ x)) x)))
+               (foo (fn (x) (+ x 1)))
+               (succ (fn (x) (let ((y x)) (foo y))))
+               (cond (fn (x) (& (>= x 0) (< (succ x) 11)))))
+        (f 0))
+    ";
     let ast = parse(expr).unwrap();
     let code = Compiler::new().compile(ast);
     println!("{}", code);
